@@ -1,5 +1,8 @@
 # CPU Rasterizer
 
+## Specs
+This currently runs only under x86 and windows. SSE2 is required.
+
 ## TODO
 - Actual threading with a proper tile-system (binning).
 - Should probably test 128x128 or 64x64 tiles.
