@@ -142,7 +142,8 @@ namespace nmj
 
 			// Calculate variables for stepping
 			S32 bcoord_row[3], bcoord_xstep[3], bcoord_ystep[3];
-			float bcoordf_row[3], bcoordf_xstep[3], bcoordf_ystep[3];
+			float	inv_w_row, inv_w_xstep, inv_w_ystep;
+			float4 color_row, color_xstep, color_ystep;
 			{
 				// Fixed-point min bounds with 0.5 subtracted from it (we want to sample from the middle of pixel).
 				S32 fixed_bounds[2];
@@ -162,15 +163,33 @@ namespace nmj
 
 				// Normalized barycentric coordinates as floating point.
 				float inv_triarea_x2f = 1.0f / float(triarea_x2);
-				bcoordf_row[0] = float(bcoord_row[0]) * inv_triarea_x2f;
-				bcoordf_row[1] = float(bcoord_row[1]) * inv_triarea_x2f;
-				bcoordf_row[2] = float(bcoord_row[2]) * inv_triarea_x2f;
-				bcoordf_xstep[0] = float(bcoord_xstep[0]) * inv_triarea_x2f;
-				bcoordf_xstep[1] = float(bcoord_xstep[1]) * inv_triarea_x2f;
-				bcoordf_xstep[2] = float(bcoord_xstep[2]) * inv_triarea_x2f;
-				bcoordf_ystep[0] = float(bcoord_ystep[0]) * inv_triarea_x2f;
-				bcoordf_ystep[1] = float(bcoord_ystep[1]) * inv_triarea_x2f;
-				bcoordf_ystep[2] = float(bcoord_ystep[2]) * inv_triarea_x2f;
+				float bcoordf_row1 = float(bcoord_row[1]) * inv_triarea_x2f;
+				float bcoordf_row2 = float(bcoord_row[2]) * inv_triarea_x2f;
+				float bcoordf_xstep1 = float(bcoord_xstep[1]) * inv_triarea_x2f;
+				float bcoordf_xstep2 = float(bcoord_xstep[2]) * inv_triarea_x2f;
+				float bcoordf_ystep1 = float(bcoord_ystep[1]) * inv_triarea_x2f;
+				float bcoordf_ystep2 = float(bcoord_ystep[2]) * inv_triarea_x2f;
+
+				// W interpolation
+				float inv_w0 = 1.0f / v[0].w;
+				float inv_w1 = 1.0f / v[1].w;
+				float inv_w2 = 1.0f / v[2].w;
+				float inv_w10 = inv_w1 - inv_w0;
+				float inv_w20 = inv_w2 - inv_w0;
+				inv_w_row = inv_w0 + inv_w10 * bcoordf_row1 + inv_w20 * bcoordf_row2;
+				inv_w_xstep = inv_w10 * bcoordf_xstep1 + inv_w20 * bcoordf_xstep2;
+				inv_w_ystep = inv_w10 * bcoordf_ystep1 + inv_w20 * bcoordf_ystep2;
+
+				// Color interpolation
+				if (ColorWrite && VertexColor)
+				{
+					float4 color0 = c[0] * inv_w0;
+					float4 color10 = (c[1] * inv_w1) - color0;
+					float4 color20 = (c[2] * inv_w2) - color0;
+					color_row = color0 + color10 * bcoordf_row1 + color20 * bcoordf_row2;
+					color_xstep = color10 * bcoordf_xstep1 + color20 * bcoordf_xstep2;
+					color_ystep = color10 * bcoordf_ystep1 + color20 * bcoordf_ystep2;
+				}
 			}
 
 			// Output buffer
@@ -187,14 +206,17 @@ namespace nmj
 
 				// Setup stepped buffers for row operations.
 				S32 bcoord[3];
-				float bcoordf[3];
+				float inv_w;
+				float4 color;
 				{
 					bcoord[0] = bcoord_row[0];
 					bcoord[1] = bcoord_row[1];
 					bcoord[2] = bcoord_row[2];
-					bcoordf[0] = bcoordf_row[0];
-					bcoordf[1] = bcoordf_row[1];
-					bcoordf[2] = bcoordf_row[2];
+
+					inv_w = inv_w_row;
+
+					if (ColorWrite && VertexColor)
+						color = color_row;
 				}
 
 				for (S32 x = bounds[0][0]; x <= bounds[1][0]; ++x)
@@ -202,32 +224,26 @@ namespace nmj
 					// When inside triangle, output pixel.
 					if ((bcoord[0] | bcoord[1] | bcoord[2]) >= 0)
 					{
-						float inv_w;
-						inv_w =  (1.0f / v[0].w) * bcoordf[0];
-						inv_w += (1.0f / v[1].w) * bcoordf[1];
-						inv_w += (1.0f / v[2].w) * bcoordf[2];
 						float w = 1.0f / inv_w;
 
 						// Write color output
 						if (ColorWrite)
 						{
-							// Interpolate color.
-							float4 color;
+							// Output pixel
 							if (VertexColor)
 							{
-								color =  (c[0] * (1.0f / v[0].w)) * bcoordf[0];
-								color += (c[1] * (1.0f / v[1].w)) * bcoordf[1];
-								color += (c[2] * (1.0f / v[2].w)) * bcoordf[2];
-								color *= w;
+								out_color[0] = U8(w * color.x * 255.0f);
+								out_color[1] = U8(w * color.y * 255.0f);
+								out_color[2] = U8(w * color.z * 255.0f);
+								out_color[3] = U8(w * color.w * 255.0f);
 							}
 							else
-								color = float4(1.0f);
-
-							// Output pixel
-							out_color[0] = U8(color.x * 255.0f);
-							out_color[1] = U8(color.y * 255.0f);
-							out_color[2] = U8(color.z * 255.0f);
-							out_color[3] = U8(color.w * 255.0f);
+							{
+								out_color[0] = U8(255);
+								out_color[1] = U8(255);
+								out_color[2] = U8(255);
+								out_color[3] = U8(255);
+							}
 						}
 					}
 
@@ -237,9 +253,11 @@ namespace nmj
 					bcoord[0] += bcoord_xstep[0];
 					bcoord[1] += bcoord_xstep[1];
 					bcoord[2] += bcoord_xstep[2];
-					bcoordf[0] += bcoordf_xstep[0];
-					bcoordf[1] += bcoordf_xstep[1];
-					bcoordf[2] += bcoordf_xstep[2];
+
+					inv_w += inv_w_xstep;
+
+					if (ColorWrite && VertexColor)
+						color += color_xstep;
 				}
 
 				if (ColorWrite)
@@ -248,9 +266,11 @@ namespace nmj
 				bcoord_row[0] += bcoord_ystep[0];
 				bcoord_row[1] += bcoord_ystep[1];
 				bcoord_row[2] += bcoord_ystep[2];
-				bcoordf_row[0] += bcoordf_ystep[0];
-				bcoordf_row[1] += bcoordf_ystep[1];
-				bcoordf_row[2] += bcoordf_ystep[2];
+
+				inv_w_row += inv_w_ystep;
+
+				if (ColorWrite && VertexColor)
+					color_row += color_ystep;
 			}
 		}
 	}
