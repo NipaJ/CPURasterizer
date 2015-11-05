@@ -86,7 +86,7 @@ namespace nmj
 			float4 object_transform[4];
 			float4 camera_transform[4], camera_projection[4], view_projection[4];
 			CreateCameraTransform(camera_transform, camera.pos, camera.axis);
-			CreatePerspectiveProjection(camera_projection, camera.fov, float(output.width) / float(output.height), 0.01f, 800.0f);
+			CreatePerspectiveProjection(camera_projection, camera.fov, float(output.width) / float(output.height), 0.1f, 100.0f);
 			Mul(view_projection, camera_transform, camera_projection);
 
 			state[0].flags = RasterizerFlagColorWrite | RasterizerFlagDepthWrite | RasterizerFlagDepthTest;
@@ -267,7 +267,7 @@ namespace nmj
 				// Clear frame buffers
 				U64 clear_buffers_time = GetTime(api);
 				ClearColor(app.framebuffer, float4(0.0f), 0, 1);
-				ClearDepth(app.framebuffer, 0.0f, 0, 1);
+				ClearDepth(app.framebuffer, 1.0f, 0, 1);
 				clear_buffers_time = GetTime(api) - clear_buffers_time;
 
 				// Render scene

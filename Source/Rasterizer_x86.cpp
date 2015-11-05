@@ -43,7 +43,7 @@ namespace nmj
 
 		if (ColorWrite)
 			color_buffer += half_height * S32(width) + half_width;
-		if (DepthWrite)
+		if (DepthWrite | DepthTest)
 			depth_buffer += half_height * S32(width) + half_width;
 
 		for (U32 count = input.triangle_count; count--; )
@@ -143,7 +143,8 @@ namespace nmj
 			// Calculate variables for stepping
 			S32 bcoord_row[3], bcoord_xstep[3], bcoord_ystep[3];
 			float	inv_w_row, inv_w_xstep, inv_w_ystep;
-			float4 color_row, color_xstep, color_ystep;
+			float	z_row, z_xstep, z_ystep;
+			float4 pers_color_row, pers_color_xstep, pers_color_ystep;
 			{
 				// Fixed-point min bounds with 0.5 subtracted from it (we want to sample from the middle of pixel).
 				S32 fixed_bounds[2];
@@ -180,34 +181,57 @@ namespace nmj
 				inv_w_xstep = inv_w10 * bcoordf_xstep1 + inv_w20 * bcoordf_xstep2;
 				inv_w_ystep = inv_w10 * bcoordf_ystep1 + inv_w20 * bcoordf_ystep2;
 
+				// Z interpolation
+				if (DepthWrite || DepthTest)
+				{
+					float z0 = v[0].z * inv_w0;
+					float z10 = (v[1].z * inv_w1) - z0;
+					float z20 = (v[2].z * inv_w2) - z0;
+					z_row = z0 + z10 * bcoordf_row1 + z20 * bcoordf_row2;
+					z_xstep = z10 * bcoordf_xstep1 + z20 * bcoordf_xstep2;
+					z_ystep = z10 * bcoordf_ystep1 + z20 * bcoordf_ystep2;
+				}
+
 				// Color interpolation
 				if (ColorWrite && VertexColor)
 				{
-					float4 color0 = c[0] * inv_w0;
-					float4 color10 = (c[1] * inv_w1) - color0;
-					float4 color20 = (c[2] * inv_w2) - color0;
-					color_row = color0 + color10 * bcoordf_row1 + color20 * bcoordf_row2;
-					color_xstep = color10 * bcoordf_xstep1 + color20 * bcoordf_xstep2;
-					color_ystep = color10 * bcoordf_ystep1 + color20 * bcoordf_ystep2;
+					float4 pers_color0 = c[0] * inv_w0;
+					float4 pers_color10 = (c[1] * inv_w1) - pers_color0;
+					float4 pers_color20 = (c[2] * inv_w2) - pers_color0;
+					pers_color_row = pers_color0 + pers_color10 * bcoordf_row1 + pers_color20 * bcoordf_row2;
+					pers_color_xstep = pers_color10 * bcoordf_xstep1 + pers_color20 * bcoordf_xstep2;
+					pers_color_ystep = pers_color10 * bcoordf_ystep1 + pers_color20 * bcoordf_ystep2;
 				}
 			}
 
 			// Output buffer
-			U32 *out_color_row = color_buffer + (bounds[0][1] * S32(width) + bounds[0][0]);
-			// U16 *depth_row = depth_buffer + bounds[0][1] * S32(width) + bounds[0][0];
+			U32 *out_color_row;
+			U16 *out_depth_row;
+			{
+				if (ColorWrite)
+					out_color_row = color_buffer + (bounds[0][1] * S32(width) + bounds[0][0]);
+				if (DepthWrite || DepthTest)
+					out_depth_row = depth_buffer + (bounds[0][1] * S32(width) + bounds[0][0]);
+			}
 
 			// Sample the bounding box of the triangle and output pixels.
 			for (S32 y = bounds[0][1]; y <= bounds[1][1]; ++y)
 			{
 				// Setup output buffers
 				U8 *out_color;
-				if (ColorWrite)
-					out_color = (U8 *)out_color_row;
+				U16 *out_depth;
+				{
+					if (ColorWrite)
+						out_color = (U8 *)out_color_row;
+					if (DepthWrite || DepthTest)
+						out_depth = out_depth_row;
+				}
 
 				// Setup stepped buffers for row operations.
 				S32 bcoord[3];
 				float inv_w;
-				float4 color;
+				float z;
+				float4 pers_color;
 				{
 					bcoord[0] = bcoord_row[0];
 					bcoord[1] = bcoord_row[1];
@@ -215,53 +239,85 @@ namespace nmj
 
 					inv_w = inv_w_row;
 
+					if (DepthWrite || DepthTest)
+						z = z_row;
+
 					if (ColorWrite && VertexColor)
-						color = color_row;
+						pers_color = pers_color_row;
 				}
 
+				// X loop
 				for (S32 x = bounds[0][0]; x <= bounds[1][0]; ++x)
 				{
 					// When inside triangle, output pixel.
-					if ((bcoord[0] | bcoord[1] | bcoord[2]) >= 0)
-					{
-						float w = 1.0f / inv_w;
+					if ((bcoord[0] | bcoord[1] | bcoord[2]) < 0)
+						goto skip_pixel;
 
-						// Write color output
-						if (ColorWrite)
+					// Interpolated W
+					float w = 1.0f / inv_w;
+
+					// Interpolated Z
+					U16 z_unorm;
+					if (DepthWrite || DepthTest)
+						z_unorm = U16(z * float(0xFFFF));
+
+					// Apply depth testing.
+					if (DepthTest)
+					{
+						if (*out_depth < z_unorm)
+							goto skip_pixel;
+					}
+
+					// Write color output
+					if (ColorWrite)
+					{
+						// Output pixel
+						if (VertexColor)
 						{
-							// Output pixel
-							if (VertexColor)
-							{
-								out_color[0] = U8(w * color.x * 255.0f);
-								out_color[1] = U8(w * color.y * 255.0f);
-								out_color[2] = U8(w * color.z * 255.0f);
-								out_color[3] = U8(w * color.w * 255.0f);
-							}
-							else
-							{
-								out_color[0] = U8(255);
-								out_color[1] = U8(255);
-								out_color[2] = U8(255);
-								out_color[3] = U8(255);
-							}
+							out_color[0] = U8(w * pers_color.x * 255.0f);
+							out_color[1] = U8(w * pers_color.y * 255.0f);
+							out_color[2] = U8(w * pers_color.z * 255.0f);
+							out_color[3] = U8(w * pers_color.w * 255.0f);
+						}
+						else
+						{
+							out_color[0] = U8(255);
+							out_color[1] = U8(255);
+							out_color[2] = U8(255);
+							out_color[3] = U8(255);
 						}
 					}
 
-					if (ColorWrite)
-						out_color += 4;
+					// Write depth output
+					if (DepthWrite)
+						*out_depth = z_unorm;
 
-					bcoord[0] += bcoord_xstep[0];
-					bcoord[1] += bcoord_xstep[1];
-					bcoord[2] += bcoord_xstep[2];
+					// I dislike goto, but it wins the over-nested case above without it.
+					skip_pixel:
+					{
+						if (ColorWrite)
+							out_color += 4;
+						if (DepthWrite || DepthTest)
+							out_depth += 1;
 
-					inv_w += inv_w_xstep;
+						bcoord[0] += bcoord_xstep[0];
+						bcoord[1] += bcoord_xstep[1];
+						bcoord[2] += bcoord_xstep[2];
 
-					if (ColorWrite && VertexColor)
-						color += color_xstep;
-				}
+						inv_w += inv_w_xstep;
+
+						if (DepthWrite || DepthTest)
+							z += z_xstep;
+
+						if (ColorWrite && VertexColor)
+							pers_color += pers_color_xstep;
+					}
+				} // X loop
 
 				if (ColorWrite)
 					out_color_row += width;
+				if (DepthWrite || DepthTest)
+					out_depth_row += width;
 
 				bcoord_row[0] += bcoord_ystep[0];
 				bcoord_row[1] += bcoord_ystep[1];
@@ -269,10 +325,14 @@ namespace nmj
 
 				inv_w_row += inv_w_ystep;
 
+				if (DepthWrite || DepthTest)
+					z_row += z_ystep;
+
 				if (ColorWrite && VertexColor)
-					color_row += color_ystep;
-			}
-		}
+					pers_color_row += pers_color_ystep;
+
+			} // Y loop
+		} // Triangle loop
 	}
 
 	// Calculate tile information.
