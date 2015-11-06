@@ -79,7 +79,7 @@ namespace nmj
 				_mm_store_ps(v[i].v, result);
 			}
 
-			// Clip off-screen triangles away.
+			// Reject off-screen triangles.
 			if (v[0].x > v[0].w && v[0].y > v[0].w && v[0].z > v[0].w)
 				continue;
 			if (v[0].x < -v[0].w && v[0].y < -v[0].w && v[0].z < 0.0f)
@@ -91,6 +91,10 @@ namespace nmj
 			if (v[2].x > v[2].w && v[2].y > v[2].w && v[2].z > v[2].w)
 				continue;
 			if (v[2].x < -v[2].w && v[2].y < -v[2].w && v[2].z < 0.0f)
+				continue;
+
+			// Hack rejection for planes, that cross near plane
+			if (v[0].z < 0.0f || v[1].z < 0.0f || v[2].z < 0.0f)
 				continue;
 
 			// Convert to pixel coordinates as fixed point.
