@@ -8,6 +8,7 @@
 #include "MathUtils.h"
 
 #include <stdio.h>
+#include <vector>
 
 namespace nmj
 {
@@ -18,8 +19,24 @@ namespace nmj
 		float fov;
 	};
 
+	struct Model
+	{
+		float3 *vertex_pos;
+		float4 *vertex_color;
+		U16 *indices;
+
+		U32 triangle_count;
+	};
+
+	struct SceneObject
+	{
+		const Model *model;
+		float4 transform[4];
+	};
+
 	struct Scene
 	{
+		std::vector<SceneObject> objects;
 	};
 
 	struct Application
@@ -29,12 +46,22 @@ namespace nmj
 		Font *font;
 		bool mouse_exclusive;
 		float mouse_sensitivity;
+		float frame_delta;
 
+		// Player info
 		float player_yaw, player_pitch;
 		U32 player_flags;
 
+		// Rasterizer
 		RasterizerOutput framebuffer;
+		std::vector<RasterizerInput> rasterizer_input;
 
+		// Profiler
+		U64 clear_buffers_time;
+		U64 render_scene_time;
+		U64 blit_time;
+
+		// Game world
 		Camera camera;
 		Scene scene;
 	};
@@ -47,9 +74,9 @@ namespace nmj
 		PlayerFlagMoveLeft = 0x00000008
 	};
 
-	void RenderScene(const Scene &scene, RasterizerOutput &output, const Camera &camera)
+	void CreateTestScene(Scene &scene)
 	{
-		static const float3 vertices[8] =
+		static float3 vertices[8] =
 		{
 			float3(-1.0f, +1.0f, +1.0f),
 			float3(+1.0f, +1.0f, +1.0f),
@@ -60,7 +87,7 @@ namespace nmj
 			float3(+1.0f, -1.0f, -1.0f),
 			float3(-1.0f, -1.0f, -1.0f)
 		};
-		static const float4 colors[8] =
+		static float4 colors[8] =
 		{
 			float4(1.0f, 1.0f, 0.0f, 0.0f),
 			float4(0.0f, 1.0f, 0.0f, 0.0f),
@@ -71,7 +98,7 @@ namespace nmj
 			float4(0.0f, 0.0f, 1.0f, 0.0f),
 			float4(1.0f, 0.0f, 1.0f, 0.0f)
 		};
-		static const U16 indices[] =
+		static U16 indices[] =
 		{
 			/* Front  */ 0, 1, 2, 0, 2, 3,
 			/* Back   */ 4, 6, 5, 4, 7, 6,
@@ -80,42 +107,20 @@ namespace nmj
 			/* Top    */ 0, 4, 5, 0, 5, 1,
 			/* Bottom */ 3, 2, 6, 3, 6, 7
 		};
-
-		RasterizerState state[2];
+		static Model box_model =
 		{
-			float4 object_transform[4];
-			float4 camera_transform[4], camera_projection[4], view_projection[4];
-			CreateCameraTransform(camera_transform, camera.pos, camera.axis);
-			CreatePerspectiveProjection(camera_projection, camera.fov, float(output.width) / float(output.height), 0.1f, 100.0f);
-			Mul(view_projection, camera_transform, camera_projection);
+			vertices,
+			colors,
+			indices,
+			12
+		};
 
-			state[0].flags = RasterizerFlagColorWrite | RasterizerFlagDepthWrite | RasterizerFlagDepthTest;
-			state[1].flags = RasterizerFlagColorWrite | RasterizerFlagDepthWrite | RasterizerFlagDepthTest;
+		scene.objects.resize(2);
+		scene.objects[0].model = &box_model;
+		scene.objects[1].model = &box_model;
 
-			state[0].transform[0] = view_projection[0];
-			state[0].transform[1] = view_projection[1];
-			state[0].transform[2] = view_projection[2];
-			state[0].transform[3] = view_projection[3];
-
-			CreateTranslate(object_transform, float3(3.0f, 0.0f, 0.0f));
-			Mul(state[1].transform, object_transform, view_projection);
-		}
-
-		RasterizerInput input[2];
-		input[0].state = &state[0];
-		input[0].vertices = vertices;
-		input[0].colors = colors;
-		input[0].texcoords = NULL;
-		input[0].indices = indices;
-		input[0].triangle_count = 12;
-		input[1].state = &state[1];
-		input[1].vertices = vertices;
-		input[1].colors = colors;
-		input[1].texcoords = NULL;
-		input[1].indices = indices;
-		input[1].triangle_count = 12;
-
-		Rasterize(output, input, 2, 0, 1);
+		CreateIdentity(scene.objects[0].transform);
+		CreateTranslate(scene.objects[1].transform, float3(3.0f, 0.0f, 0.0f));
 	}
 
 	void OnKeyboardEvent(void *userdata, KeyCode code, bool down)
@@ -189,6 +194,88 @@ namespace nmj
 		}
 	}
 
+	void Build(std::vector<RasterizerInput> &self, const Scene &scene, float4 (&view_projection)[4])
+	{
+		U32 index = 0;
+		self.resize(scene.objects.size());
+
+		for (auto object : scene.objects)
+		{
+			const Model *model = object.model;
+
+			RasterizerInput &ri = self[index++];
+			ri.vertices = model->vertex_pos;
+			ri.colors = model->vertex_color;
+			ri.texcoords = NULL;
+			ri.indices = model->indices;
+			ri.triangle_count = model->triangle_count;
+
+			Mul(ri.transform, object.transform, view_projection);
+		}
+	}
+
+	void RenderFrame(Application &app, LockBufferInfo &frame_info)
+	{
+		// Clear frame buffers
+		app.clear_buffers_time = GetTime(app.api);
+		ClearColor(app.framebuffer, float4(0.0f), 0, 1);
+		ClearDepth(app.framebuffer, 1.0f, 0, 1);
+		app.clear_buffers_time = GetTime(app.api) - app.clear_buffers_time;
+
+		// Render scene
+		app.render_scene_time = GetTime(app.api);
+		{
+			float4 camera_transform[4], camera_projection[4], view_projection[4];
+			CreateCameraTransform(camera_transform, app.camera.pos, app.camera.axis);
+			CreatePerspectiveProjection(camera_projection, app.camera.fov, float(app.framebuffer.width) / float(app.framebuffer.height), 0.1f, 100.0f);
+			Mul(view_projection, camera_transform, camera_projection);
+
+			Build(app.rasterizer_input, app.scene, view_projection);
+
+			RasterizerState state;
+			state.flags = RasterizerFlagColorWrite | RasterizerFlagDepthWrite | RasterizerFlagDepthTest;
+			state.output = &app.framebuffer;
+			Rasterize(state, app.rasterizer_input.data(), U32(app.rasterizer_input.size()), 0, 1);
+		}
+		app.render_scene_time = GetTime(app.api) - app.render_scene_time;
+
+		// Blit scene to screen.
+		app.blit_time = GetTime(app.api);
+		Blit(frame_info, app.framebuffer, 0, 1);
+		app.blit_time = GetTime(app.api) - app.blit_time;
+	}
+
+	void PrintDebugStats(const Application &app, LockBufferInfo &frame_info)
+	{
+		// unsafe
+		static char buffer[1024];
+		U32 line = 0;
+
+		sprintf_s(buffer, sizeof buffer, "FPS: %.2f (%.2fms)", 1.0f / app.frame_delta, app.frame_delta * 1000.0f);
+		RenderText(app.font, frame_info, 0, 18 * line++, buffer, float4(1.0f, 0.0f, 0.0f, 0.0f));
+
+		sprintf_s(buffer, sizeof buffer, "ClearBuffers: %.3fms", (float(app.clear_buffers_time) / float(U64(1) << U64(32))) * 1000.0f);
+		RenderText(app.font, frame_info, 0, 18 * line++, buffer, float4(1.0f, 0.0f, 0.0f, 0.0f));
+		sprintf_s(buffer, sizeof buffer, "RenderScene: %.3fms", (float(app.render_scene_time) / float(U64(1) << U64(32))) * 1000.0f);
+		RenderText(app.font, frame_info, 0, 18 * line++, buffer, float4(1.0f, 0.0f, 0.0f, 0.0f));
+		sprintf_s(buffer, sizeof buffer, "Blit: %.3fms", (float(app.blit_time) / float(U64(1) << U64(32))) * 1000.0f);
+		RenderText(app.font, frame_info, 0, 18 * line++, buffer, float4(1.0f, 0.0f, 0.0f, 0.0f));
+
+		sprintf_s(buffer, sizeof buffer, "Position: [%.2f, %.2f, %.2f]", app.camera.pos.x, app.camera.pos.y, app.camera.pos.z);
+		RenderText(app.font, frame_info, 0, 18 * line++, buffer, float4(1.0f, 0.0f, 0.0f, 0.0f));
+		sprintf_s(buffer, sizeof buffer, "Yaw: %.2f", app.player_yaw / Pi * 180.0f);
+		RenderText(app.font, frame_info, 0, 18 * line++, buffer, float4(1.0f, 0.0f, 0.0f, 0.0f));
+		sprintf_s(buffer, sizeof buffer, "Pitch: %.2f", app.player_pitch / Pi * 180.0f);
+		RenderText(app.font, frame_info, 0, 18 * line++, buffer, float4(1.0f, 0.0f, 0.0f, 0.0f));
+
+		sprintf_s(buffer, sizeof buffer, "Axis X: [%.2f, %.2f, %.2f]", app.camera.axis[0].x, app.camera.axis[0].y, app.camera.axis[0].z);
+		RenderText(app.font, frame_info, 0, 18 * line++, buffer, float4(1.0f, 0.0f, 0.0f, 0.0f));
+		sprintf_s(buffer, sizeof buffer, "Axis Y: [%.2f, %.2f, %.2f]", app.camera.axis[1].x, app.camera.axis[1].y, app.camera.axis[1].z);
+		RenderText(app.font, frame_info, 0, 18 * line++, buffer, float4(1.0f, 0.0f, 0.0f, 0.0f));
+		sprintf_s(buffer, sizeof buffer, "Axis Z: [%.2f, %.2f, %.2f]", app.camera.axis[2].x, app.camera.axis[2].y, app.camera.axis[2].z);
+		RenderText(app.font, frame_info, 0, 18 * line++, buffer, float4(1.0f, 0.0f, 0.0f, 0.0f));
+	}
+
 	void Main(PlatformAPI *api)
 	{
 		// Application settings
@@ -208,6 +295,9 @@ namespace nmj
 		// Setup camera
 		app.camera.pos = float3(0.0f, 0.0f, -5.0f);
 		app.camera.fov = Tau * 0.25f;
+
+		// Setup scene
+		CreateTestScene(app.scene);
 		
 		// Set events
 		SetKeyboardEvent(api, &app, OnKeyboardEvent);
@@ -231,96 +321,47 @@ namespace nmj
 
 		// Frame update loop
 		U64 frame_start_time = GetTime(api);
-		float frame_delta = 0.0001f;
+		app.frame_delta = 0.0001f;
 		while (Update(api))
 		{
+			// Apply player rotation to camera.
+			app.camera.axis[0] = float3(1.0f, 0.0f, 0.0f);
+			app.camera.axis[1] = float3(0.0f, 1.0f, 0.0f);
+			app.camera.axis[2] = float3(0.0f, 0.0f, 1.0f);
+			Rotate(app.camera.axis[0], float3(1.0f, 0.0f, 0.0f), app.player_pitch);
+			Rotate(app.camera.axis[1], float3(1.0f, 0.0f, 0.0f), app.player_pitch);
+			Rotate(app.camera.axis[2], float3(1.0f, 0.0f, 0.0f), app.player_pitch);
+			Rotate(app.camera.axis[0], float3(0.0f, 1.0f, 0.0f), app.player_yaw);
+			Rotate(app.camera.axis[1], float3(0.0f, 1.0f, 0.0f), app.player_yaw);
+			Rotate(app.camera.axis[2], float3(0.0f, 1.0f, 0.0f), app.player_yaw);
+
+			// Apply player movement to camera
+			float3 player_velocity = 0.0f;
+			if (app.player_flags & PlayerFlagMoveForward)
+				player_velocity += app.camera.axis[2];
+			if (app.player_flags & PlayerFlagMoveBackward)
+				player_velocity -= app.camera.axis[2];
+			if (app.player_flags & PlayerFlagMoveRight)
+				player_velocity -= app.camera.axis[0];
+			if (app.player_flags & PlayerFlagMoveLeft)
+				player_velocity += app.camera.axis[0];
+			if (Dot(player_velocity, player_velocity) != 0.0f)
+				Normalize(player_velocity);
+			player_velocity *= 5.0f * app.frame_delta;
+			app.camera.pos += player_velocity;
+
 			// Render the frame
 			LockBufferInfo frame_info;
 			LockBuffer(app.renderer, frame_info);
-			{
-				// Apply player rotation to camera.
-				app.camera.axis[0] = float3(1.0f, 0.0f, 0.0f);
-				app.camera.axis[1] = float3(0.0f, 1.0f, 0.0f);
-				app.camera.axis[2] = float3(0.0f, 0.0f, 1.0f);
-				Rotate(app.camera.axis[0], float3(1.0f, 0.0f, 0.0f), app.player_pitch);
-				Rotate(app.camera.axis[1], float3(1.0f, 0.0f, 0.0f), app.player_pitch);
-				Rotate(app.camera.axis[2], float3(1.0f, 0.0f, 0.0f), app.player_pitch);
-				Rotate(app.camera.axis[0], float3(0.0f, 1.0f, 0.0f), app.player_yaw);
-				Rotate(app.camera.axis[1], float3(0.0f, 1.0f, 0.0f), app.player_yaw);
-				Rotate(app.camera.axis[2], float3(0.0f, 1.0f, 0.0f), app.player_yaw);
-
-				// Apply player movement to camera
-				float3 player_velocity = 0.0f;
-				if (app.player_flags & PlayerFlagMoveForward)
-					player_velocity += app.camera.axis[2];
-				if (app.player_flags & PlayerFlagMoveBackward)
-					player_velocity -= app.camera.axis[2];
-				if (app.player_flags & PlayerFlagMoveRight)
-					player_velocity -= app.camera.axis[0];
-				if (app.player_flags & PlayerFlagMoveLeft)
-					player_velocity += app.camera.axis[0];
-				if (Dot(player_velocity, player_velocity) != 0.0f)
-					Normalize(player_velocity);
-				player_velocity *= 5.0f * frame_delta;
-				app.camera.pos += player_velocity;
-
-				// Clear frame buffers
-				U64 clear_buffers_time = GetTime(api);
-				ClearColor(app.framebuffer, float4(0.0f), 0, 1);
-				ClearDepth(app.framebuffer, 1.0f, 0, 1);
-				clear_buffers_time = GetTime(api) - clear_buffers_time;
-
-				// Render scene
-				U64 render_scene_time = GetTime(api);
-				RenderScene(app.scene, app.framebuffer, app.camera);
-				render_scene_time = GetTime(api) - render_scene_time;
-
-				// Blit scene to screen.
-				U64 blit_time = GetTime(api);
-				Blit(frame_info, app.framebuffer, 0, 1);
-				blit_time = GetTime(api) - blit_time;
-
-				// Print debug stats
-				{
-					// unsafe
-					static char buffer[1024];
-					U32 line = 0;
-
-					sprintf_s(buffer, sizeof buffer, "FPS: %.2f (%.2fms)", 1.0f / frame_delta, frame_delta * 1000.0f);
-					RenderText(app.font, frame_info, 0, 18 * line++, buffer, float4(1.0f, 0.0f, 0.0f, 0.0f));
-
-					sprintf_s(buffer, sizeof buffer, "ClearBuffers: %.3fms", (float(clear_buffers_time) / float(U64(1) << U64(32))) * 1000.0f);
-					RenderText(app.font, frame_info, 0, 18 * line++, buffer, float4(1.0f, 0.0f, 0.0f, 0.0f));
-					sprintf_s(buffer, sizeof buffer, "RenderScene: %.3fms", (float(render_scene_time) / float(U64(1) << U64(32))) * 1000.0f);
-					RenderText(app.font, frame_info, 0, 18 * line++, buffer, float4(1.0f, 0.0f, 0.0f, 0.0f));
-					sprintf_s(buffer, sizeof buffer, "Blit: %.3fms", (float(blit_time) / float(U64(1) << U64(32))) * 1000.0f);
-					RenderText(app.font, frame_info, 0, 18 * line++, buffer, float4(1.0f, 0.0f, 0.0f, 0.0f));
-
-					sprintf_s(buffer, sizeof buffer, "Position: [%.2f, %.2f, %.2f]", app.camera.pos.x, app.camera.pos.y, app.camera.pos.z);
-					RenderText(app.font, frame_info, 0, 18 * line++, buffer, float4(1.0f, 0.0f, 0.0f, 0.0f));
-					sprintf_s(buffer, sizeof buffer, "Yaw: %.2f", app.player_yaw / Pi * 180.0f);
-					RenderText(app.font, frame_info, 0, 18 * line++, buffer, float4(1.0f, 0.0f, 0.0f, 0.0f));
-					sprintf_s(buffer, sizeof buffer, "Pitch: %.2f", app.player_pitch / Pi * 180.0f);
-					RenderText(app.font, frame_info, 0, 18 * line++, buffer, float4(1.0f, 0.0f, 0.0f, 0.0f));
-
-					sprintf_s(buffer, sizeof buffer, "Axis X: [%.2f, %.2f, %.2f]", app.camera.axis[0].x, app.camera.axis[0].y, app.camera.axis[0].z);
-					RenderText(app.font, frame_info, 0, 18 * line++, buffer, float4(1.0f, 0.0f, 0.0f, 0.0f));
-					sprintf_s(buffer, sizeof buffer, "Axis Y: [%.2f, %.2f, %.2f]", app.camera.axis[1].x, app.camera.axis[1].y, app.camera.axis[1].z);
-					RenderText(app.font, frame_info, 0, 18 * line++, buffer, float4(1.0f, 0.0f, 0.0f, 0.0f));
-					sprintf_s(buffer, sizeof buffer, "Axis Z: [%.2f, %.2f, %.2f]", app.camera.axis[2].x, app.camera.axis[2].y, app.camera.axis[2].z);
-					RenderText(app.font, frame_info, 0, 18 * line++, buffer, float4(1.0f, 0.0f, 0.0f, 0.0f));
-				}
-
-				// Calculate frame delta time
-				{
-					U64 time = GetTime(api);
-					U64 delta = time - frame_start_time;
-					frame_start_time = time;
-
-					frame_delta = float(delta) / float(U64(1) << U64(32));
-				}
-			}
+			RenderFrame(app, frame_info);
+			PrintDebugStats(app, frame_info);
 			UnlockBuffer(app.renderer);
+
+			// Calculate frame delta time
+			U64 time = GetTime(api);
+			U64 delta = time - frame_start_time;
+			frame_start_time = time;
+			app.frame_delta = float(delta) / float(U64(1) << U64(32));
 		}
 	}
 }

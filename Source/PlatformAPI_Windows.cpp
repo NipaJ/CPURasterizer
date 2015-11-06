@@ -1,15 +1,10 @@
 #include "General.h"
 #include "PlatformAPI.h"
 
-// #define SOFTWARE_RENDERER_DIRECT2D 1
 #define SOFTWARE_RENDERER_GDI 1
 
 #include <windows.h>
 #include <stdlib.h>
-
-#if SOFTWARE_RENDERER_DIRECT2D
-#include <dxgi.h>
-#endif
 
 namespace nmj
 {
@@ -26,8 +21,7 @@ namespace nmj
 		// have composite_cast thanks to virtual inheritance.
 		PlatformAPI *api;
 
-#if SOFTWARE_RENDERER_DIRECT2D
-#elif SOFTWARE_RENDERER_GDI
+#if SOFTWARE_RENDERER_GDI
 		// Software framebuffer info
 		BITMAPINFO bitmapinfo;
 		void *bitmap_buffer;
@@ -480,36 +474,7 @@ namespace nmj
 
 		renderer->api = self;
 
-#if SOFTWARE_RENDERER_DIRECT2D
-		IDXGIFactory1 *factory;
-		IDXGIAdapter1 *adapter;
-
-		if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), &factory)))
-		{
-			self->renderer_type = RendererTypeNone;
-			return NULL;
-		}
-
-		if (factory->EnumAdapters1(0, &adapter) != 0)
-		{
-			factory->Release();
-			self->renderer_type = RendererTypeNone;
-			return NULL;
-		}
-
-		DXGI_SWAP_CHAIN_DESC scdesc;
-		memset(&scdesc, 0, sizeof scdesc);
-		scdesc.BufferCount = 2;
-		scdesc.BufferDesc.Width = width;
-		scdesc.BufferDesc.Height = height;
-		scdesc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-
-		adapter->
-		if (factory->CreateSwapChain(adapter, &scdesc, &self->swap_chain) != 0)
-		{
-		}
-
-#elif SOFTWARE_RENDERER_GDI
+#if SOFTWARE_RENDERER_GDI
 		// Setup bitmap info
 		BITMAPINFO &bitmapinfo = renderer->bitmapinfo;
 		memset(&bitmapinfo, 0, sizeof (BITMAPINFO));
