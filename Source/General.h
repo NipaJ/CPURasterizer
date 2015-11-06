@@ -55,19 +55,19 @@ namespace nmj
 	template <typename T>
 	NMJ_FORCEINLINE T GetAligned(T value, UPtr alignment)
 	{
-		alignment -= 1;
-		return (value + alignment) & ~T(alignment);
+		const UPtr mask = alignment - 1;
+		return (value + mask) & ~T(mask);
 	}
 
 	/* Align pointer with power of two value. */
 	template <typename T>
 	NMJ_FORCEINLINE T *GetAligned(T *value, UPtr alignment)
 	{
-		alignment -= 1;
+		const UPtr mask = alignment - 1;
 
 		UPtr addr = UPtr(value);
-		addr += alignment;
-		addr &= ~alignment;
+		addr += mask;
+		addr &= ~mask;
 		return (T *)addr;
 	}
 }

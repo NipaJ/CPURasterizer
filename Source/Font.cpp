@@ -115,6 +115,7 @@ namespace nmj
 
 					U8 alpha = ci.bitmap[iy * ci.cw + ix];
 
+					// NOTE: Should probably not use LockBufferInfo, since it could be a write-only video buffer.
 					U32 *pixel = (U32 *)(data + ((oy * frame_info.pitch) + ox * 4));
 					U8 bg_color[3] =
 					{

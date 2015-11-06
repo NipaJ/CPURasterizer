@@ -21,15 +21,6 @@ namespace nmj
 	};
 
 	/**
-	 * Rasterizer state.
-	 */
-	struct RasterizerState
-	{
-		_declspec(align(16)) float4 transform[4];
-		U32 flags;
-	};
-
-	/**
 	 * Rasterizer output data.
 	 *
 	 * Buffers should point to an array with size of (width * height).
@@ -57,8 +48,8 @@ namespace nmj
 	 */
 	struct RasterizerInput
 	{
-		/* Rasterization state. */
-		const RasterizerState *state;
+		/* Vertex transform matrix, using row-vectors. */
+		_declspec(align(16)) float4 transform[4];
 
 		/**
 		 * Per vertex information.
@@ -73,6 +64,15 @@ namespace nmj
 
 		/* Number of triangles. */
 		U32 triangle_count;
+	};
+
+	/**
+	 * Rasterizer state.
+	 */
+	struct RasterizerState
+	{
+		RasterizerOutput *output;
+		U32 flags;
 	};
 
 	/**
@@ -94,24 +94,33 @@ namespace nmj
 	/**
 	 * Transform number of triangles to rasterized buffers.
 	 *
-	 * You can split the process into multiple tiles. Each tile is completely
-	 * independent from each other and can be processed in parallel.
+	 * You can split the work into N amount of calls, which can be processed
+	 * in parallel.
 	 */
-	void Rasterize(RasterizerOutput &output, const RasterizerInput *input, U32 input_count, U32 tile_index, U32 tile_count);
+	void Rasterize(RasterizerState &state, const RasterizerInput *input, U32 input_count, U32 split_index = 0, U32 num_splits = 1);
 
 	/**
 	 * Clear color buffer
+	 *
+	 * You can split the work into N amount of calls, which can be processed
+	 * in parallel.
 	 */
-	void ClearColor(RasterizerOutput &output, float4 value, U32 tile_index, U32 tile_count);
+	void ClearColor(RasterizerOutput &output, float4 value, U32 split_index = 0, U32 num_splits = 1);
 
 	/**
 	 * Clear depth buffer
+	 *
+	 * You can split the work into N amount of calls, which can be processed
+	 * in parallel.
 	 */
-	void ClearDepth(RasterizerOutput &output, float value, U32 tile_index, U32 tile_count);
+	void ClearDepth(RasterizerOutput &output, float value, U32 split_index = 0, U32 num_splits = 1);
 
 	/**
 	 * Blit output buffer to screen.
+	 *
+	 * You can split the work into N amount of calls, which can be processed
+	 * in parallel.
 	 */
-	void Blit(LockBufferInfo &output, RasterizerOutput &input, U32 tile_index, U32 tile_count);
+	void Blit(LockBufferInfo &output, RasterizerOutput &input, U32 split_index = 0, U32 num_splits = 1);
 }
 

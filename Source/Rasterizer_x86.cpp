@@ -23,14 +23,12 @@ namespace nmj
 	template <bool ColorWrite, bool DepthWrite, bool DepthTest, bool DiffuseMap, bool VertexColor>
 	static void RasterizeTile(U32 x, U32 y, U32 width, U32 height, U32 *color_buffer, U16 *depth_buffer, const RasterizerInput &input)
 	{
-		const RasterizerState &state = *input.state;
-
 		__m128 transform_matrix[4] =
 		{
-			_mm_load_ps(state.transform[0].v),
-			_mm_xor_ps(_mm_load_ps(state.transform[1].v), _mm_castsi128_ps(_mm_set1_epi32(0x80000000))),
-			_mm_load_ps(state.transform[2].v),
-			_mm_load_ps(state.transform[3].v)
+			_mm_load_ps(input.transform[0].v),
+			_mm_xor_ps(_mm_load_ps(input.transform[1].v), _mm_castsi128_ps(_mm_set1_epi32(0x80000000))),
+			_mm_load_ps(input.transform[2].v),
+			_mm_load_ps(input.transform[3].v)
 		};
 
 		const float3 *vertices = input.vertices;
@@ -335,17 +333,6 @@ namespace nmj
 		} // Triangle loop
 	}
 
-	// Calculate tile information.
-	static void GetTileInfo(U32 &x, U32 &y, U32 &width, U32 &height, U32 &offset, RasterizerOutput &ro, U32 tile_index, U32 tile_count)
-	{
-		// TODO: Implement
-		x = 0;
-		y = 0;
-		width = ro.width;
-		height = ro.height;
-		offset = 0;
-	}
-
 	U32 GetRequiredMemoryAmount(const RasterizerOutput &self, bool color, bool depth)
 	{
 		U32 ret = 0;
@@ -386,7 +373,7 @@ namespace nmj
 		}
 	}
 
-	void Rasterize(RasterizerOutput &output, const RasterizerInput *input, U32 input_count, U32 tile_index, U32 tile_count)
+	void Rasterize(RasterizerState &state, const RasterizerInput *input, U32 input_count, U32 split_index, U32 num_splits)
 	{
 		// [VertexColor << 4 | DiffuseMap << 3 | ColorWrite << 2 | DepthWrite << 1 | DepthTest]
 		static RasterizeTileFunc *pipeline[] =
@@ -425,18 +412,21 @@ namespace nmj
 			&RasterizeTile<1, 1, 1, 1, 1>
 		};
 
-		U32 tile_x, tile_y, tile_width, tile_height, tile_offset;
-		GetTileInfo(tile_x, tile_y, tile_width, tile_height, tile_offset, output, tile_index, tile_count);
+		// TODO: Handle the splits and binning properly.
+		const U32 tile_x = 0;
+		const U32 tile_y = 0;
+		const U32 tile_width = state.output->width;
+		const U32 tile_height = state.output->height;
+		const U32 tile_offset = 0;
 
-		U32 *color_buffer = output.color_buffer + tile_offset;
-		U16 *depth_buffer = output.depth_buffer + tile_offset;
+		U32 *color_buffer = state.output->color_buffer + tile_offset;
+		U16 *depth_buffer = state.output->depth_buffer + tile_offset;
 
 		while (input_count--)
 		{
 			const RasterizerInput &ri = *input++;
-			const RasterizerState *state = ri.state;
 
-			U32 lookup_index = state->flags & 7;
+			U32 lookup_index = state.flags & 7;
 
 			if (ri.colors)
 				lookup_index |= 1 << 4;
@@ -448,8 +438,9 @@ namespace nmj
 		}
 	}
 
-	void ClearColor(RasterizerOutput &output, float4 value, U32 tile_index, U32 tile_count)
+	void ClearColor(RasterizerOutput &output, float4 value, U32 split_index, U32 num_splits)
 	{
+		// TODO: Handle splits.
 		U32 *out = output.color_buffer;
 
 		U32 cv = U8(value.x * 255.0f) | U8(value.y * 255.0f) << 8 | U8(value.z * 255.0f) << 16 | U8(value.w * 255.0f) << 24;
@@ -458,8 +449,9 @@ namespace nmj
 			*out++ = cv;
 	}
 
-	void ClearDepth(RasterizerOutput &output, float value, U32 tile_index, U32 tile_count)
+	void ClearDepth(RasterizerOutput &output, float value, U32 split_index, U32 num_splits)
 	{
+		// TODO: Handle splits.
 		U16 *out = output.depth_buffer;
 
 		U16 cv = U16(value * float(0xFFFF));
@@ -468,10 +460,18 @@ namespace nmj
 			*out++ = cv;
 	}
 
-	void Blit(LockBufferInfo &output, RasterizerOutput &input, U32 tile_index, U32 tile_count)
+	void Blit(LockBufferInfo &output, RasterizerOutput &input, U32 split_index, U32 num_splits)
 	{
-		U32 tile_x, tile_y, tile_width, tile_height, tile_offset;
-		GetTileInfo(tile_x, tile_y, tile_width, tile_height, tile_offset, input, tile_index, tile_count);
+		// TODO: Handle the splits properly.
+		const U32 tile_x = 0;
+		const U32 tile_y = 0;
+		const U32 tile_width = input.width;
+		const U32 tile_height = input.height;
+		const U32 tile_offset = 0;
+
+		// Bound checks
+		NMJ_ASSERT(tile_x + tile_width <= outout.width);
+		NMJ_ASSERT(tile_y + tile_height <= outout.height);
 
 		U8 *in = (U8 *)(input.color_buffer + tile_offset);
 		char *out = ((char *)output.data) + output.pitch * tile_y + tile_x;
@@ -482,7 +482,7 @@ namespace nmj
 
 		if ((tile_width & 3) == 0)
 		{
-			for (U32 y = tile_height; y--;)
+			for (U32 y = tile_height; y--; )
 			{
 				U8 *p = (U8 *)out;
 				for (U32 x = tile_width; x != 0; x -= 4)
