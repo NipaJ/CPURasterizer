@@ -26,27 +26,25 @@ namespace nmj
 	struct RasterizerOutput
 	{
 		/**
-		 * 8bit channel RGB color buffer.
+		 * 32bit RGB color buffer with 8bit channels.
 		 *
-		 * Buffer should be rounded up to size that matches the 4x2 block
+		 * Buffer should be rounded up to size that matches the 2x2 block
 		 * layout and 16 byte alignment is required.
 		 *
-		 * The memory is packed as 4x2 pixels block in following layout:
-		 * 00: R1 R2 R3 R4 R5 R6 R7 R8
-		 * 08: G1 G2 G3 G4 G5 G6 G7 G8
-		 * 16: B1 B2 B3 B4 B5 B6 B7 B8
-		 * 24: X  X  X  X  X  X  X  X
+		 * The memory is packed as 2x2 pixels block in following layout:
+		 * 00: R1 G1 B1 X  R2 G2 B2 X
+		 * 08: R3 G3 B3 X  R4 G4 B4 X
 		 *
 		 * From screen-space layout of:
-		 *  -------------------- X
-		 * | RGB1 RGB2 RGB3 RGB4
-		 * | RGB5 RGB6 RGB7 RGB8
+		 *  ---------- X
+		 * | RGB1 RGB2
+		 * | RGB3 RGB4
 		 * Y
 		 *
 		 * You can access block of pixels like this:
-		 * U8 *block = (U8 *)color_buffer;
+		 * char *block = (char *)color_buffer;
 		 * block += color_pitch * (y / 2);
-		 * block += (x / 4) * 32;
+		 * block += (x / 2) * 16;
 		 */
 		void *color_buffer;
 
@@ -74,7 +72,7 @@ namespace nmj
 		void *depth_buffer;
 
 		/**
-		 * Byte offset to step one row of 4x2 blocks.
+		 * Byte offset to step one row of 2x2 blocks.
 		 */
 		U32 color_pitch;
 		U32 depth_pitch;

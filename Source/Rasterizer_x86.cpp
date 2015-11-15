@@ -9,21 +9,20 @@
 // Disable this warning, since our template trick relies heavily on conditional constant optimizations.
 #pragma warning(disable : 4127)
 
-// Fixed-point configs for the subpixel accuracy.
-#define PIXEL_FRACBITS 4
-#define PIXEL_FRACUNIT 16
-#define PIXEL_FRACUNIT_FLOAT 16.0f
-
 namespace nmj
 {
-	enum { ColorBufferBlockSize = 32 };
-	enum { DepthBufferBlockSize = 16 };
+	// Fixed-point configs for the subpixel accuracy.
+	enum { PixelFracBits = 4 };
+	enum { PixelFracUnit = 1 << PixelFracBits };
+
+	enum { ColorBlockBytes = 16 };
+	enum { DepthBlockBytes = 16 };
 
 	// Function type for the RasterizeTile function.
 	typedef void RasterizeTileFunc(
 		U32 block_x, U32 block_y, U32 block_width, U32 block_height,
 		U32 screen_width, U32 screen_height,
-		U32 *color_buffer, U16 *depth_buffer,
+		void *color_buffer, void *depth_buffer,
 		const RasterizerInput &input
 	);
 
@@ -32,7 +31,7 @@ namespace nmj
 	static void RasterizeTile(
 		U32 block_x, U32 block_y, U32 block_width, U32 block_height,
 		U32 screen_width, U32 screen_height,
-		U32 *color_buffer, U16 *depth_buffer,
+		void *color_buffer, void *depth_buffer,
 		const RasterizerInput &input)
 	{
 		__m128 transform_matrix[4] =
@@ -50,11 +49,6 @@ namespace nmj
 
 		S32 half_width = screen_width / 2;
 		S32 half_height = screen_height / 2;
-
-		if (ColorWrite)
-			color_buffer += half_height * S32(screen_width) + half_width;
-		if (DepthWrite | DepthTest)
-			depth_buffer += half_height * S32(screen_width) + half_width;
 
 		for (U32 count = input.triangle_count; count--; )
 		{
@@ -125,7 +119,7 @@ namespace nmj
 				v22xy = _mm_div_ps(v22xy, v22ww);
 
 				__m128 res = _mm_cvtepi32_ps(_mm_set_epi32(half_height, half_width, half_height, half_width));
-				__m128 unit_scale = _mm_mul_ps(res, _mm_set1_ps(PIXEL_FRACUNIT_FLOAT));
+				__m128 unit_scale = _mm_mul_ps(res, _mm_set1_ps(float(PixelFracUnit)));
 				v01xy = _mm_mul_ps(v01xy, unit_scale);
 				v22xy = _mm_mul_ps(v22xy, unit_scale);
 				_mm_store_si128((__m128i *)coord[0], _mm_cvttps_epi32(v01xy));
@@ -139,16 +133,16 @@ namespace nmj
 			const S32 coord02y = coord[0][1] - coord[2][1];
 
 			// Triangle area * 2
-			const S32 triarea_x2 = -((coord02x * coord21y) >> PIXEL_FRACBITS) + ((coord02y * coord21x) >> PIXEL_FRACBITS);
+			const S32 triarea_x2 = -((coord02x * coord21y) >> PixelFracBits) + ((coord02y * coord21x) >> PixelFracBits);
 			if (triarea_x2 < 0)
 				continue;
 
 			// Calculate bounds
 			S32 bounds[2][2];
-			bounds[0][0] = (Min(Min(coord[0][0], coord[1][0]), coord[2][0]) + (PIXEL_FRACUNIT - 1)) >> PIXEL_FRACBITS;
-			bounds[0][1] = (Min(Min(coord[0][1], coord[1][1]), coord[2][1]) + (PIXEL_FRACUNIT - 1)) >> PIXEL_FRACBITS;
-			bounds[1][0] = (Max(Max(coord[0][0], coord[1][0]), coord[2][0]) + (PIXEL_FRACUNIT - 1)) >> PIXEL_FRACBITS;
-			bounds[1][1] = (Max(Max(coord[0][1], coord[1][1]), coord[2][1]) + (PIXEL_FRACUNIT - 1)) >> PIXEL_FRACBITS;
+			bounds[0][0] = (Min(Min(coord[0][0], coord[1][0]), coord[2][0]) + (PixelFracUnit - 1)) >> PixelFracBits;
+			bounds[0][1] = (Min(Min(coord[0][1], coord[1][1]), coord[2][1]) + (PixelFracUnit - 1)) >> PixelFracBits;
+			bounds[1][0] = (Max(Max(coord[0][0], coord[1][0]), coord[2][0]) + (PixelFracUnit - 1)) >> PixelFracBits;
+			bounds[1][1] = (Max(Max(coord[0][1], coord[1][1]), coord[2][1]) + (PixelFracUnit - 1)) >> PixelFracBits;
 			bounds[0][0] = Max(Min(bounds[0][0], half_width - 1), -half_width);
 			bounds[0][1] = Max(Min(bounds[0][1], half_height - 1), -half_height);
 			bounds[1][0] = Max(Min(bounds[1][0], half_width - 1), -half_width);
@@ -162,12 +156,12 @@ namespace nmj
 			{
 				// Fixed-point min bounds with 0.5 subtracted from it (we want to sample from the middle of pixel).
 				S32 fixed_bounds[2];
-				fixed_bounds[0] = (bounds[0][0] << PIXEL_FRACBITS) - PIXEL_FRACUNIT / 2;
-				fixed_bounds[1] = (bounds[0][1] << PIXEL_FRACBITS) - PIXEL_FRACUNIT / 2;
+				fixed_bounds[0] = (bounds[0][0] << PixelFracBits) - PixelFracUnit / 2;
+				fixed_bounds[1] = (bounds[0][1] << PixelFracBits) - PixelFracUnit / 2;
 
 				// Barycentric integer coordinates
-				bcoord_row[0] = ((coord21x * (fixed_bounds[1] - coord[1][1])) >> PIXEL_FRACBITS) - ((coord21y * (fixed_bounds[0] - coord[1][0])) >> PIXEL_FRACBITS);
-				bcoord_row[1] = ((coord02x * (fixed_bounds[1] - coord[2][1])) >> PIXEL_FRACBITS) - ((coord02y * (fixed_bounds[0] - coord[2][0])) >> PIXEL_FRACBITS);
+				bcoord_row[0] = ((coord21x * (fixed_bounds[1] - coord[1][1])) >> PixelFracBits) - ((coord21y * (fixed_bounds[0] - coord[1][0])) >> PixelFracBits);
+				bcoord_row[1] = ((coord02x * (fixed_bounds[1] - coord[2][1])) >> PixelFracBits) - ((coord02y * (fixed_bounds[0] - coord[2][0])) >> PixelFracBits);
 				bcoord_row[2] = triarea_x2 - bcoord_row[0] - bcoord_row[1];
 				bcoord_xstep[0] = -coord21y;
 				bcoord_xstep[1] = -coord02y;
@@ -223,9 +217,15 @@ namespace nmj
 			U16 *out_depth_row;
 			{
 				if (ColorWrite)
-					out_color_row = color_buffer + (bounds[0][1] * S32(screen_width) + bounds[0][0]);
+				{
+					out_color_row = (U32 *)color_buffer;
+					out_color_row += (bounds[0][1] * S32(screen_width) + bounds[0][0]);
+				}
 				if (DepthWrite || DepthTest)
-					out_depth_row = depth_buffer + (bounds[0][1] * S32(screen_width) + bounds[0][0]);
+				{
+					out_depth_row = (U16 *)depth_buffer;
+					out_depth_row += (bounds[0][1] * S32(screen_width) + bounds[0][0]);
+				}
 			}
 
 			// Sample the bounding box of the triangle and output pixels.
@@ -351,7 +351,7 @@ namespace nmj
 
 	U32 GetRequiredMemoryAmount(const RasterizerOutput &self, bool color, bool depth)
 	{
-		const U32 width = (self.width + 3) / 4;
+		const U32 width = (self.width + 1) / 2;
 		const U32 height = (self.height + 1) / 2;
 
 		U32 ret = 16;
@@ -360,7 +360,7 @@ namespace nmj
 		{
 			ret = GetAligned(ret, 16);
 
-			U32 pitch = width * 32;
+			U32 pitch = width * ColorBlockBytes;
 			ret += pitch * height;
 		}
 
@@ -368,7 +368,7 @@ namespace nmj
 		{
 			ret = GetAligned(ret, 16);
 
-			U32 pitch = width * 16;
+			U32 pitch = width * DepthBlockBytes;
 			ret += pitch * height;
 		}
 
@@ -377,7 +377,7 @@ namespace nmj
 
 	void Initialize(RasterizerOutput &self, void *memory, bool color, bool depth)
 	{
-		const U32 width = (self.width + 3) / 4;
+		const U32 width = (self.width + 1) / 2;
 		const U32 height = (self.height + 1) / 2;
 
 		char *alloc_stack = (char *)memory;
@@ -386,7 +386,7 @@ namespace nmj
 		{
 			alloc_stack = GetAligned(alloc_stack, 16);
 
-			U32 pitch = width * 32;
+			U32 pitch = width * ColorBlockBytes;
 			self.color_buffer = alloc_stack;
 			self.color_pitch = pitch;
 			alloc_stack += pitch * height;
@@ -396,7 +396,7 @@ namespace nmj
 		{
 			alloc_stack = GetAligned(alloc_stack, 16);
 
-			U32 pitch = width * 16;
+			U32 pitch = width * DepthBlockBytes;
 			self.depth_buffer = alloc_stack;
 			self.depth_pitch = pitch;
 			alloc_stack += pitch * height;
@@ -442,11 +442,21 @@ namespace nmj
 			&RasterizeTile<1, 1, 1, 1, 1>
 		};
 
-		U32 *color_buffer = (U32 *)state.output->color_buffer;
-		U16 *depth_buffer = (U16 *)state.output->depth_buffer;
 		U32 width = state.output->width;
 		U32 height = state.output->height;
 		U32 flags = state.flags & 7;
+
+		char *color_buffer = (char *)state.output->color_buffer;
+		if (color_buffer)
+			color_buffer += ((height / 2) * width + width / 2) * 4;
+		else
+			flags &= ~RasterizerFlagColorWrite;
+
+		char *depth_buffer = (char *)state.output->depth_buffer;
+		if (depth_buffer)
+			depth_buffer += ((height / 2) * width + width / 2) * 2;
+		else
+			flags &= ~RasterizerFlagDepthWrite;
 
 		while (input_count--)
 		{
@@ -461,7 +471,7 @@ namespace nmj
 				lookup_index |= 1 << 3;
 
 			(*pipeline[lookup_index])(
-				0, 0, (width + 3) / 4, (height + 1) / 2,
+				0, 0, (width + 1) / 2, (height + 1) / 2,
 				width, height,
 				color_buffer, depth_buffer,
 				ri
