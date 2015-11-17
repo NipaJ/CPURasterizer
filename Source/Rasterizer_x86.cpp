@@ -15,12 +15,35 @@ namespace nmj
 	enum { PixelFracBits = 4 };
 	enum { PixelFracUnit = 1 << PixelFracBits };
 
+	// SIMD block settings
+	enum { BlockSizeX = 2 };
+	enum { BlockSizeY = 2 };
 	enum { ColorBlockBytes = 16 };
 	enum { DepthBlockBytes = 16 };
 
+	// Tile settings
+	enum { MaxTrianglesPerTile = 4096 }; // TODO: Make this dynamic.
+	enum { TileSizeX = 32 };
+	enum { TileSizeY = 32 };
+	enum { ColorTileBytes = TileSizeX * TileSizeY * 4 };
+	enum { DepthTileBytes = TileSizeX * TileSizeY * 4 };
+
+	// Triangle bin
+	struct TriangleBin
+	{
+		// Fixed-point pixel coordinates for the triangle.
+		//
+		// Using structure of arrays instead of array of structures, since it's more
+		// SIMD and cache friendly.
+		U32 triangle_x[3][MaxTrianglesPerTile];
+		U32 triangle_y[3][MaxTrianglesPerTile];
+
+		U32 triangle_count;
+	};
+
 	// Function type for the RasterizeTile function.
 	typedef void RasterizeTileFunc(
-		U32 block_x, U32 block_y, U32 block_width, U32 block_height,
+		U32 tile_x, U32 tile_y,
 		U32 screen_width, U32 screen_height,
 		void *color_buffer, void *depth_buffer,
 		const RasterizerInput &input
@@ -29,26 +52,42 @@ namespace nmj
 	// Use template to easily generate multiple functions with different rasterizer state.
 	template <bool ColorWrite, bool DepthWrite, bool DepthTest, bool DiffuseMap, bool VertexColor>
 	static void RasterizeTile(
-		U32 block_x, U32 block_y, U32 block_width, U32 block_height,
+		U32 tile_x, U32 tile_y,
 		U32 screen_width, U32 screen_height,
 		void *color_buffer, void *depth_buffer,
 		const RasterizerInput &input)
 	{
 		__m128 transform_matrix[4] =
 		{
-			_mm_load_ps(input.transform[0].v),
-			_mm_xor_ps(_mm_load_ps(input.transform[1].v), _mm_castsi128_ps(_mm_set1_epi32(0x80000000))),
-			_mm_load_ps(input.transform[2].v),
-			_mm_load_ps(input.transform[3].v)
+			_mm_loadu_ps(input.transform[0].v),
+			_mm_loadu_ps(input.transform[1].v),
+			_mm_loadu_ps(input.transform[2].v),
+			_mm_loadu_ps(input.transform[3].v)
 		};
+
+		// Transform Y to point down.
+		transform_matrix[1] = _mm_xor_ps(transform_matrix[1], _mm_set1_ps(-0.0f));
+
+		// Screen coordinates.
+		S32 scx = screen_width / 2;
+		S32 scy = screen_height / 2;
+		S32 sx = tile_x * TileSizeX;
+		S32 sy = tile_y * TileSizeY;
+
+		// Tile rectangle.
+		S32 tile_min_x = sx - scx;
+		S32 tile_min_y = sy - scy;
+		S32 tile_max_x = Min((sx + TileSizeX - 1) - scx, scx - 1);
+		S32 tile_max_y = Min((sy + TileSizeY - 1) - scy, scx - 1);
+
+		// TODO: This could probably be combined with the matrix above? Should think about it.
+		float xscale = float(scx << PixelFracBits);
+		float yscale = float(scy << PixelFracBits);
 
 		const float3 *vertices = input.vertices;
 		const float4 *colors = input.colors;
 		// const float2 *texcoords = input.texcoords;
 		const U16 *indices = input.indices;
-
-		S32 half_width = screen_width / 2;
-		S32 half_height = screen_height / 2;
 
 		for (U32 count = input.triangle_count; count--; )
 		{
@@ -85,46 +124,20 @@ namespace nmj
 				_mm_store_ps(v[i].v, result);
 			}
 
-			// Reject off-screen triangles.
-			if (v[0].x > v[0].w && v[0].y > v[0].w && v[0].z > v[0].w)
+			// Hack rejection for planes, that cross near plane or far-plane
+			if (v[0].z > v[0].w || v[1].z > v[1].w || v[2].z > v[2].w)
 				continue;
-			if (v[0].x < -v[0].w && v[0].y < -v[0].w && v[0].z < 0.0f)
-				continue;
-			if (v[1].x > v[1].w && v[1].y > v[1].w && v[1].z > v[1].w)
-				continue;
-			if (v[1].x < -v[1].w && v[1].y < -v[1].w && v[1].z < 0.0f)
-				continue;
-			if (v[2].x > v[2].w && v[2].y > v[2].w && v[2].z > v[2].w)
-				continue;
-			if (v[2].x < -v[2].w && v[2].y < -v[2].w && v[2].z < 0.0f)
-				continue;
-
-			// Hack rejection for planes, that cross near plane
 			if (v[0].z < 0.0f || v[1].z < 0.0f || v[2].z < 0.0f)
 				continue;
 
-			// Convert to pixel coordinates as fixed point.
-			// Also figure out pixel bounds as integers.
-			_declspec(align(16)) S32 coord[4][2];
-			{
-				__m128 v0 = _mm_load_ps(v[0].v);
-				__m128 v1 = _mm_load_ps(v[1].v);
-				__m128 v2 = _mm_load_ps(v[2].v);
-
-				__m128 v01xy = _mm_shuffle_ps(v0, v1, _MM_SHUFFLE(1, 0, 1, 0));
-				__m128 v22xy = _mm_shuffle_ps(v2, v2, _MM_SHUFFLE(1, 0, 1, 0));
-				__m128 v01ww = _mm_shuffle_ps(v0, v1, _MM_SHUFFLE(3, 3, 3, 3));
-				__m128 v22ww = _mm_shuffle_ps(v2, v2, _MM_SHUFFLE(3, 3, 3, 3));
-				v01xy = _mm_div_ps(v01xy, v01ww);
-				v22xy = _mm_div_ps(v22xy, v22ww);
-
-				__m128 res = _mm_cvtepi32_ps(_mm_set_epi32(half_height, half_width, half_height, half_width));
-				__m128 unit_scale = _mm_mul_ps(res, _mm_set1_ps(float(PixelFracUnit)));
-				v01xy = _mm_mul_ps(v01xy, unit_scale);
-				v22xy = _mm_mul_ps(v22xy, unit_scale);
-				_mm_store_si128((__m128i *)coord[0], _mm_cvttps_epi32(v01xy));
-				_mm_store_si128((__m128i *)coord[2], _mm_cvttps_epi32(v22xy));
-			}
+			// Convert to clip space coordinates to fixed point screen space coordinates.
+			S32 coord[3][2];
+			coord[0][0] = S32(v[0].x * xscale / v[0].w);
+			coord[0][1] = S32(v[0].y * yscale / v[0].w);
+			coord[1][0] = S32(v[1].x * xscale / v[1].w);
+			coord[1][1] = S32(v[1].y * yscale / v[1].w);
+			coord[2][0] = S32(v[2].x * xscale / v[2].w);
+			coord[2][1] = S32(v[2].y * yscale / v[2].w);
 
 			// Precalculate barycentric conversion constants.
 			const S32 coord21x = coord[2][0] - coord[1][0];
@@ -143,10 +156,18 @@ namespace nmj
 			bounds[0][1] = (Min(Min(coord[0][1], coord[1][1]), coord[2][1]) + (PixelFracUnit - 1)) >> PixelFracBits;
 			bounds[1][0] = (Max(Max(coord[0][0], coord[1][0]), coord[2][0]) + (PixelFracUnit - 1)) >> PixelFracBits;
 			bounds[1][1] = (Max(Max(coord[0][1], coord[1][1]), coord[2][1]) + (PixelFracUnit - 1)) >> PixelFracBits;
-			bounds[0][0] = Max(Min(bounds[0][0], half_width - 1), -half_width);
-			bounds[0][1] = Max(Min(bounds[0][1], half_height - 1), -half_height);
-			bounds[1][0] = Max(Min(bounds[1][0], half_width - 1), -half_width);
-			bounds[1][1] = Max(Min(bounds[1][1], half_height - 1), -half_height);
+
+			// Clip off-tile triangles.
+			// NOTE: If the binning process would be accurate enough, we could just ignore this.
+			if (bounds[0][0] > tile_max_x || bounds[0][1] > tile_max_y)
+				continue;
+			if (bounds[1][0] < tile_min_x || bounds[1][1] < tile_min_y)
+				continue;
+
+			bounds[0][0] = Max(Min(bounds[0][0], tile_max_x), tile_min_x);
+			bounds[0][1] = Max(Min(bounds[0][1], tile_max_y), tile_min_y);
+			bounds[1][0] = Max(Min(bounds[1][0], tile_max_x), tile_min_x);
+			bounds[1][1] = Max(Min(bounds[1][1], tile_max_y), tile_min_y);
 
 			// Calculate variables for stepping
 			S32 bcoord_row[3], bcoord_xstep[3], bcoord_ystep[3];
@@ -213,18 +234,21 @@ namespace nmj
 			}
 
 			// Output buffer
-			U32 *out_color_row;
-			U16 *out_depth_row;
+			char *out_color_row;
+			char *out_depth_row;
 			{
+				S32 x_in_tile = bounds[0][0] - tile_min_x;
+				S32 y_in_tile = bounds[0][1] - tile_min_y;
+
 				if (ColorWrite)
 				{
-					out_color_row = (U32 *)color_buffer;
-					out_color_row += (bounds[0][1] * S32(screen_width) + bounds[0][0]);
+					out_color_row = (char *)color_buffer;
+					out_color_row += (y_in_tile * TileSizeX + x_in_tile) * 4;
 				}
 				if (DepthWrite || DepthTest)
 				{
-					out_depth_row = (U16 *)depth_buffer;
-					out_depth_row += (bounds[0][1] * S32(screen_width) + bounds[0][0]);
+					out_depth_row = (char *)depth_buffer;
+					out_depth_row += (y_in_tile * TileSizeX + x_in_tile) * 4;
 				}
 			}
 
@@ -232,11 +256,11 @@ namespace nmj
 			for (S32 y = bounds[0][1]; y <= bounds[1][1]; ++y)
 			{
 				// Setup output buffers
-				U8 *out_color;
-				U16 *out_depth;
+				char *out_color;
+				char *out_depth;
 				{
 					if (ColorWrite)
-						out_color = (U8 *)out_color_row;
+						out_color = out_color_row;
 					if (DepthWrite || DepthTest)
 						out_depth = out_depth_row;
 				}
@@ -267,20 +291,25 @@ namespace nmj
 					if ((bcoord[0] | bcoord[1] | bcoord[2]) < 0)
 						goto skip_pixel;
 
+					// Interpolated Z
+					if (DepthTest || DepthWrite)
+					{
+						U32 z_unorm = U32(z * float(0xFFFFFF));
+
+						// Apply depth testing.
+						if (DepthTest)
+						{
+							if (*(U32 *)out_depth < z_unorm)
+								goto skip_pixel;
+						}
+
+						// Write depth output
+						if (DepthWrite)
+							*(U32 *)out_depth = z_unorm;
+					}
+
 					// Interpolated W
 					float w = 1.0f / inv_w;
-
-					// Interpolated Z
-					U16 z_unorm;
-					if (DepthWrite || DepthTest)
-						z_unorm = U16(z * float(0xFFFF));
-
-					// Apply depth testing.
-					if (DepthTest)
-					{
-						if (*out_depth < z_unorm)
-							goto skip_pixel;
-					}
 
 					// Write color output
 					if (ColorWrite)
@@ -288,23 +317,17 @@ namespace nmj
 						// Output pixel
 						if (VertexColor)
 						{
-							out_color[0] = U8(w * pers_color.x * 255.0f);
-							out_color[1] = U8(w * pers_color.y * 255.0f);
-							out_color[2] = U8(w * pers_color.z * 255.0f);
-							// out_color[3] = U8(w * pers_color.w * 255.0f);
+							((U8 *)out_color)[0] = U8(w * pers_color.x * 255.0f);
+							((U8 *)out_color)[1] = U8(w * pers_color.y * 255.0f);
+							((U8 *)out_color)[2] = U8(w * pers_color.z * 255.0f);
 						}
 						else
 						{
-							out_color[0] = U8(255);
-							out_color[1] = U8(255);
-							out_color[2] = U8(255);
-							// out_color[3] = U8(255);
+							((U8 *)out_color)[0] = U8(255);
+							((U8 *)out_color)[1] = U8(255);
+							((U8 *)out_color)[2] = U8(255);
 						}
 					}
-
-					// Write depth output
-					if (DepthWrite)
-						*out_depth = z_unorm;
 
 					// I dislike goto, but it wins the over-nested case above without it.
 					skip_pixel:
@@ -312,7 +335,7 @@ namespace nmj
 						if (ColorWrite)
 							out_color += 4;
 						if (DepthWrite || DepthTest)
-							out_depth += 1;
+							out_depth += 4;
 
 						bcoord[0] += bcoord_xstep[0];
 						bcoord[1] += bcoord_xstep[1];
@@ -329,9 +352,9 @@ namespace nmj
 				} // X loop
 
 				if (ColorWrite)
-					out_color_row += screen_width;
+					out_color_row += TileSizeX * 4;
 				if (DepthWrite || DepthTest)
-					out_depth_row += screen_width;
+					out_depth_row += TileSizeX * 4;
 
 				bcoord_row[0] += bcoord_ystep[0];
 				bcoord_row[1] += bcoord_ystep[1];
@@ -351,8 +374,8 @@ namespace nmj
 
 	U32 GetRequiredMemoryAmount(const RasterizerOutput &self, bool color, bool depth)
 	{
-		const U32 width = (self.width + 1) / 2;
-		const U32 height = (self.height + 1) / 2;
+		const U32 width = DivWithRoundUp<U32>(self.width, TileSizeX);
+		const U32 height = DivWithRoundUp<U32>(self.height, TileSizeY);
 
 		U32 ret = 16;
 
@@ -360,7 +383,7 @@ namespace nmj
 		{
 			ret = GetAligned(ret, 16);
 
-			U32 pitch = width * ColorBlockBytes;
+			U32 pitch = width * ColorTileBytes;
 			ret += pitch * height;
 		}
 
@@ -368,17 +391,29 @@ namespace nmj
 		{
 			ret = GetAligned(ret, 16);
 
-			U32 pitch = width * DepthBlockBytes;
+			U32 pitch = width * DepthTileBytes;
 			ret += pitch * height;
 		}
+
+		// Bins
+#if 0
+		{
+			ret = GetAligned(ret, 16);
+
+			const U32 x_tiles = DivWithRoundUp<U32>(width, TileSizeX);
+			const U32 y_tiles = DivWithRoundUp<U32>(height, TileSizeY);
+
+			ret += x_tiles * y_tiles * sizeof(TriangleBin);
+		}
+#endif
 
 		return ret;
 	}
 
 	void Initialize(RasterizerOutput &self, void *memory, bool color, bool depth)
 	{
-		const U32 width = (self.width + 1) / 2;
-		const U32 height = (self.height + 1) / 2;
+		const U32 width = DivWithRoundUp<U32>(self.width, TileSizeX);
+		const U32 height = DivWithRoundUp<U32>(self.height, TileSizeY);
 
 		char *alloc_stack = (char *)memory;
 
@@ -386,9 +421,8 @@ namespace nmj
 		{
 			alloc_stack = GetAligned(alloc_stack, 16);
 
-			U32 pitch = width * ColorBlockBytes;
+			U32 pitch = width * ColorTileBytes;
 			self.color_buffer = alloc_stack;
-			self.color_pitch = pitch;
 			alloc_stack += pitch * height;
 		}
 
@@ -396,11 +430,23 @@ namespace nmj
 		{
 			alloc_stack = GetAligned(alloc_stack, 16);
 
-			U32 pitch = width * DepthBlockBytes;
+			U32 pitch = width * DepthTileBytes;
 			self.depth_buffer = alloc_stack;
-			self.depth_pitch = pitch;
 			alloc_stack += pitch * height;
 		}
+
+		// Bins
+#if 0
+		{
+			alloc_stack = GetAligned(alloc_stack, 16);
+
+			const U32 x_tiles = DivWithRoundUp<U32>(width, TileSizeX);
+			const U32 y_tiles = DivWithRoundUp<U32>(height, TileSizeY);
+
+			self.bin = (TriangleBin *)alloc_stack;
+			alloc_stack += x_tiles * y_tiles * sizeof(TriangleBin);
+		}
+#endif
 	}
 
 	void Rasterize(RasterizerState &state, const RasterizerInput *input, U32 input_count, U32 split_index, U32 num_splits)
@@ -442,93 +488,147 @@ namespace nmj
 			&RasterizeTile<1, 1, 1, 1, 1>
 		};
 
-		U32 width = state.output->width;
-		U32 height = state.output->height;
+		// General settings
+		const U32 screen_width = state.output->width;
+		const U32 screen_height = state.output->height;
 		U32 flags = state.flags & 7;
 
+		// Validate buffers
 		char *color_buffer = (char *)state.output->color_buffer;
-		if (color_buffer)
-			color_buffer += ((height / 2) * width + width / 2) * 4;
-		else
-			flags &= ~RasterizerFlagColorWrite;
-
 		char *depth_buffer = (char *)state.output->depth_buffer;
-		if (depth_buffer)
-			depth_buffer += ((height / 2) * width + width / 2) * 2;
-		else
+		if (color_buffer == NULL)
+			flags &= ~RasterizerFlagColorWrite;
+		if (depth_buffer == NULL)
 			flags &= ~RasterizerFlagDepthWrite;
+
+		// Tile information
+		const U32 x_tile_count = DivWithRoundUp<U32>(screen_width, TileSizeX);
+		const U32 y_tile_count = DivWithRoundUp<U32>(screen_height, TileSizeY);
+		const U32 tile_count = x_tile_count * y_tile_count;
 
 		while (input_count--)
 		{
 			const RasterizerInput &ri = *input++;
 
-			U32 lookup_index = flags;
+			// Get rasterizer function.
+			RasterizeTileFunc *RasterizeTile;
+			{
+				U32 lookup_index = flags;
+				if (ri.colors)
+					lookup_index |= 1 << 4;
+				if (ri.texcoords)
+					lookup_index |= 1 << 3;
 
-			if (ri.colors)
-				lookup_index |= 1 << 4;
+				RasterizeTile = pipeline[lookup_index];
+			}
 
-			if (ri.texcoords)
-				lookup_index |= 1 << 3;
+			char *out_color = color_buffer + split_index * ColorTileBytes;
+			char *out_depth = depth_buffer + split_index * DepthTileBytes;
+			for (U32 index = split_index; index < tile_count; index += num_splits)
+			{
+				RasterizeTile(index % x_tile_count, index / x_tile_count, screen_width, screen_height, out_color, out_depth, ri);
 
-			(*pipeline[lookup_index])(
-				0, 0, (width + 1) / 2, (height + 1) / 2,
-				width, height,
-				color_buffer, depth_buffer,
-				ri
-			);
+				out_color += ColorTileBytes * num_splits;
+				out_depth += DepthTileBytes * num_splits;
+			}
 		}
 	}
 
 	void ClearColor(RasterizerOutput &output, float4 value, U32 split_index, U32 num_splits)
 	{
-		// TODO: Handle splits.
-		U32 *out = (U32 *)output.color_buffer;
+		const U32 x_tile_count = DivWithRoundUp<U32>(output.width, TileSizeX);
+		const U32 y_tile_count = DivWithRoundUp<U32>(output.height, TileSizeY);
+		const U32 tile_count = x_tile_count * y_tile_count;
 
 		U32 cv = U8(value.x * 255.0f) | U8(value.y * 255.0f) << 8 | U8(value.z * 255.0f) << 16 | U8(value.w * 255.0f) << 24;
-		U32 size = output.width * output.height;
-		while (size--)
-			*out++ = cv;
+
+		char *out = ((char *)output.color_buffer) + split_index * ColorTileBytes;
+		for (U32 index = split_index; index < tile_count; index += num_splits)
+		{
+			for (U32 count = TileSizeX * TileSizeY; count--;)
+			{
+				*(U32 *)out = cv;
+				out += 4;
+			}
+
+			out += (num_splits - 1) * ColorTileBytes;
+		}
 	}
 
 	void ClearDepth(RasterizerOutput &output, float value, U32 split_index, U32 num_splits)
 	{
-		// TODO: Handle splits.
-		U16 *out = (U16 *)output.depth_buffer;
+		const U32 x_tile_count = DivWithRoundUp<U32>(output.width, TileSizeX);
+		const U32 y_tile_count = DivWithRoundUp<U32>(output.height, TileSizeY);
+		const U32 tile_count = x_tile_count * y_tile_count;
 
-		U16 cv = U16(value * float(0xFFFF));
-		U32 size = output.width * output.height;
-		while (size--)
-			*out++ = cv;
+		U32 cv = U32(value * float(0xFFFFFF));
+
+		char *out = ((char *)output.depth_buffer) + split_index * DepthTileBytes;
+		for (U32 index = split_index; index < tile_count; index += num_splits)
+		{
+			for (U32 count = TileSizeX * TileSizeY; count--;)
+			{
+				*(U32 *)out = cv;
+				out += 4;
+			}
+
+			out += (num_splits - 1) * DepthTileBytes;
+		}
 	}
 
 	void Blit(LockBufferInfo &output, RasterizerOutput &input, U32 split_index, U32 num_splits)
 	{
-		U8 *in = (U8 *)input.color_buffer;
-		char *out = (char *)output.data;
+		NMJ_ASSERT(output.width % 4 == 0);
+		NMJ_ASSERT(output.width == input.width);
+		NMJ_ASSERT(output.height == input.height);
+
+		const U32 width = input.width;
+		const U32 height = input.height;
+
+		const U32 x_tile_count = DivWithRoundUp<U32>(width, TileSizeX);
+		const U32 y_tile_count = DivWithRoundUp<U32>(height, TileSizeY);
+		const U32 tile_count = x_tile_count * y_tile_count;
 
 		__m128i x_mask = _mm_set1_epi32(0x00FF0000);
 		__m128i y_mask = _mm_set1_epi32(0x000000FF);
 		__m128i zw_mask = _mm_set1_epi32(0xFF00FF00);
 
-		for (U32 y = input.height; y--; )
+		char *in_tile = ((char *)input.color_buffer) + split_index * ColorTileBytes;
+		for (U32 index = split_index; index < tile_count; index += num_splits)
 		{
-			U8 *p = (U8 *)out;
-			for (U32 x = input.width; x != 0; x -= 4)
+			const U32 sx = (index % x_tile_count) * TileSizeX;
+			const U32 sy = (index / x_tile_count) * TileSizeY;
+			const U32 xcount = Min(width - sx, TileSizeX);
+			const U32 ycount = Min(height - sy, TileSizeY);
+
+			char *out_row = ((char *)output.data) + sy * output.pitch + sx * 4;
+			char *in_row = in_tile;
+
+			for (U32 y = ycount; y--; )
 			{
-				__m128i simd_x = _mm_load_si128((__m128i *)in);
-				__m128i simd_z = simd_x;
-				__m128i simd_yw = simd_x;
+				char *out = out_row;
+				char *in = in_row;
 
-				simd_x = _mm_and_si128(_mm_slli_epi32(simd_x, 16), x_mask);
-				simd_z = _mm_and_si128(_mm_srli_epi32(simd_z, 16), y_mask);
-				simd_yw = _mm_and_si128(simd_yw, zw_mask);
+				for (U32 x = xcount / 4; x--; )
+				{
+					__m128i simd_x = _mm_load_si128((__m128i *)in);
+					__m128i simd_z = simd_x;
+					__m128i simd_yw = simd_x;
 
-				_mm_storeu_si128((__m128i *)p, _mm_or_si128(_mm_or_si128(simd_x, simd_z), simd_yw));
-				p += 16;
-				in += 16;
+					simd_x = _mm_and_si128(_mm_slli_epi32(simd_x, 16), x_mask);
+					simd_z = _mm_and_si128(_mm_srli_epi32(simd_z, 16), y_mask);
+					simd_yw = _mm_and_si128(simd_yw, zw_mask);
+
+					_mm_storeu_si128((__m128i *)out, _mm_or_si128(_mm_or_si128(simd_x, simd_z), simd_yw));
+					out += 16;
+					in += 16;
+				}
+
+				in_row += TileSizeX * 4;
+				out_row += output.pitch;
 			}
 
-			out += output.pitch;
+			in_tile += num_splits * ColorTileBytes;
 		}
 	}
 }

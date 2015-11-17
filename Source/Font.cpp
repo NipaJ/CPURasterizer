@@ -25,7 +25,7 @@ namespace nmj
 		float height;
 	};
 
-	Font *CreateFont(const char *filename, float height)
+	Font *CreateFontFromFile(const char *filename, float height)
 	{
 		// Load the file into memory
 		unsigned char *buffer;

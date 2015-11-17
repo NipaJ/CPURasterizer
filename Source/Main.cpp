@@ -7,11 +7,19 @@
 #include "Matrix.h"
 #include "MathUtils.h"
 
+#include <windows.h>
+#include <process.h>
 #include <stdio.h>
 #include <vector>
 
 namespace nmj
 {
+	// NOTE: We should probably query the CPU for it's cores and hyper-threading and decide this
+	//       based on that information.
+	enum { DefaultThreadAmount = 8 };
+
+	struct Application;
+
 	struct Camera
 	{
 		float3 pos;
@@ -39,6 +47,12 @@ namespace nmj
 		std::vector<SceneObject> objects;
 	};
 
+	struct ThreadData
+	{
+		U32 index;
+		Application *app;
+	};
+
 	struct Application
 	{
 		PlatformAPI *api;
@@ -53,13 +67,17 @@ namespace nmj
 		U32 player_flags;
 
 		// Rasterizer
+		LockBufferInfo *frame_info;
+		U32 rasterizer_event_id;
+		HANDLE start_rasterization_event[2];
+		HANDLE rasterizer_threads[DefaultThreadAmount];
+		HANDLE rasterization_finished_event[DefaultThreadAmount];
+		ThreadData rasterizer_data[DefaultThreadAmount];
 		RasterizerOutput framebuffer;
 		std::vector<RasterizerInput> rasterizer_input;
 
 		// Profiler
-		U64 clear_buffers_time;
 		U64 render_scene_time;
-		U64 blit_time;
 
 		// Game world
 		Camera camera;
@@ -121,6 +139,53 @@ namespace nmj
 
 		CreateIdentity(scene.objects[0].transform);
 		CreateTranslate(scene.objects[1].transform, float3(3.0f, 0.0f, 0.0f));
+	}
+
+	unsigned int (__stdcall RasterizerThread)(void *userdata)
+	{
+		ThreadData *thread_data = (ThreadData *)userdata;
+		U32 thread_index = thread_data->index;
+		Application &app = *thread_data->app;
+
+		U32 event_id = 0;
+		for (;;)
+		{
+			WaitForSingleObject(app.start_rasterization_event[event_id], INFINITE);
+			event_id = (event_id + 1) % 2;
+
+			// Clear color and depth buffers.
+			ClearColor(app.framebuffer, float4(0.0f), thread_index, DefaultThreadAmount);
+			ClearDepth(app.framebuffer, 1.0f, thread_index, DefaultThreadAmount);
+
+			// Render the scene
+			RasterizerState state;
+			state.flags = RasterizerFlagColorWrite | RasterizerFlagDepthWrite | RasterizerFlagDepthTest;
+			state.output = &app.framebuffer;
+			Rasterize(state, app.rasterizer_input.data(), U32(app.rasterizer_input.size()), thread_index, DefaultThreadAmount);
+
+			// Blit to screen.
+			Blit(*app.frame_info, app.framebuffer, thread_index, DefaultThreadAmount);
+
+			SetEvent(app.rasterization_finished_event[thread_index]);
+		}
+		// return 0;
+	}
+
+	void CreateRasterizerThreads(Application &app)
+	{
+		app.rasterizer_event_id = 0;
+		app.start_rasterization_event[0] = CreateEvent(NULL, TRUE, FALSE, NULL);
+		app.start_rasterization_event[1] = CreateEvent(NULL, TRUE, FALSE, NULL);
+
+		for (U32 i = 0; i < DefaultThreadAmount; ++i)
+		{
+			app.rasterizer_data[i].index = i;
+			app.rasterizer_data[i].app = &app;
+
+			app.rasterization_finished_event[i] = CreateEvent(NULL, FALSE, FALSE, NULL);
+
+			app.rasterizer_threads[i] = (HANDLE)_beginthreadex(NULL, 0, RasterizerThread, &app.rasterizer_data[i], 0, NULL);
+		}
 	}
 
 	void OnKeyboardEvent(void *userdata, KeyCode code, bool down)
@@ -216,33 +281,31 @@ namespace nmj
 
 	void RenderFrame(Application &app, LockBufferInfo &frame_info)
 	{
-		// Clear frame buffers
-		app.clear_buffers_time = GetTime(app.api);
-		ClearColor(app.framebuffer, float4(0.0f), 0, 1);
-		ClearDepth(app.framebuffer, 1.0f, 0, 1);
-		app.clear_buffers_time = GetTime(app.api) - app.clear_buffers_time;
-
-		// Render scene
 		app.render_scene_time = GetTime(app.api);
-		{
-			float4 camera_transform[4], camera_projection[4], view_projection[4];
-			CreateCameraTransform(camera_transform, app.camera.pos, app.camera.axis);
-			CreatePerspectiveProjection(camera_projection, app.camera.fov, float(app.framebuffer.width) / float(app.framebuffer.height), 0.1f, 100.0f);
-			Mul(view_projection, camera_transform, camera_projection);
 
-			Build(app.rasterizer_input, app.scene, view_projection);
+		// Calculate view_projection matrix.
+		float4 camera_transform[4], camera_projection[4], view_projection[4];
+		CreateCameraTransform(camera_transform, app.camera.pos, app.camera.axis);
+		CreatePerspectiveProjection(camera_projection, app.camera.fov, float(app.framebuffer.width) / float(app.framebuffer.height), 0.1f, 100.0f);
+		Mul(view_projection, camera_transform, camera_projection);
 
-			RasterizerState state;
-			state.flags = RasterizerFlagColorWrite | RasterizerFlagDepthWrite | RasterizerFlagDepthTest;
-			state.output = &app.framebuffer;
-			Rasterize(state, app.rasterizer_input.data(), U32(app.rasterizer_input.size()), 0, 1);
-		}
+		// Build rasterizer input commands.
+		Build(app.rasterizer_input, app.scene, view_projection);
+
+		app.frame_info = &frame_info;
+
+		// Start the rasterizer threads
+		U32 event_id = app.rasterizer_event_id;
+		SetEvent(app.start_rasterization_event[event_id]);
+
+		// Wait for the threads to finish.
+		WaitForMultipleObjects(DefaultThreadAmount, app.rasterization_finished_event, TRUE, INFINITE);
+		ResetEvent(app.start_rasterization_event[event_id]);
+		app.rasterizer_event_id = (event_id + 1) % 2;
+
+		app.frame_info = NULL;
+
 		app.render_scene_time = GetTime(app.api) - app.render_scene_time;
-
-		// Blit scene to screen.
-		app.blit_time = GetTime(app.api);
-		Blit(frame_info, app.framebuffer, 0, 1);
-		app.blit_time = GetTime(app.api) - app.blit_time;
 	}
 
 	void PrintDebugStats(const Application &app, LockBufferInfo &frame_info)
@@ -254,11 +317,7 @@ namespace nmj
 		sprintf_s(buffer, sizeof buffer, "FPS: %.2f (%.2fms)", 1.0f / app.frame_delta, app.frame_delta * 1000.0f);
 		RenderText(app.font, frame_info, 0, 18 * line++, buffer, float4(1.0f, 0.0f, 0.0f, 0.0f));
 
-		sprintf_s(buffer, sizeof buffer, "ClearBuffers: %.3fms", (float(app.clear_buffers_time) / float(U64(1) << U64(32))) * 1000.0f);
-		RenderText(app.font, frame_info, 0, 18 * line++, buffer, float4(1.0f, 0.0f, 0.0f, 0.0f));
 		sprintf_s(buffer, sizeof buffer, "RenderScene: %.3fms", (float(app.render_scene_time) / float(U64(1) << U64(32))) * 1000.0f);
-		RenderText(app.font, frame_info, 0, 18 * line++, buffer, float4(1.0f, 0.0f, 0.0f, 0.0f));
-		sprintf_s(buffer, sizeof buffer, "Blit: %.3fms", (float(app.blit_time) / float(U64(1) << U64(32))) * 1000.0f);
 		RenderText(app.font, frame_info, 0, 18 * line++, buffer, float4(1.0f, 0.0f, 0.0f, 0.0f));
 
 		sprintf_s(buffer, sizeof buffer, "Position: [%.2f, %.2f, %.2f]", app.camera.pos.x, app.camera.pos.y, app.camera.pos.z);
@@ -308,15 +367,20 @@ namespace nmj
 		app.renderer = CreateSoftwareRenderer(api, 1280, 720, false);
 
 		// Load default font.
-		app.font = CreateFont("C:\\Windows\\Fonts\\calibrib.ttf", 18.0f);
+		app.font = CreateFontFromFile("C:\\Windows\\Fonts\\calibrib.ttf", 18.0f);
 
-		// Initialize the default framebuffer.
+		// Initialize the rasterizer data
 		{
+			app.frame_info = NULL;
+
+			// Default framebuffer
 			app.framebuffer.width = 1280;
 			app.framebuffer.height = 720;
-
 			U32 size = GetRequiredMemoryAmount(app.framebuffer, true, true);
 			Initialize(app.framebuffer, malloc(size), true, true);
+
+			// Threads
+			CreateRasterizerThreads(app);
 		}
 
 		// Frame update loop

@@ -4,6 +4,7 @@
 #pragma once
 #include <assert.h>
 #include <stdint.h>
+#include <stddef.h>
 
 // Disable some warning level 4 warnings, that are not helpful.
 #pragma warning(disable : 4201)
@@ -69,6 +70,13 @@ namespace nmj
 		addr += mask;
 		addr &= ~mask;
 		return (T *)addr;
+	}
+
+	/* Divide and round up the results. */
+	template <typename T>
+	NMJ_FORCEINLINE T DivWithRoundUp(const T a, const T b)
+	{
+		return (a + (b - 1)) / b;
 	}
 }
 
