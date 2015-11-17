@@ -7,11 +7,19 @@
 #include "Matrix.h"
 #include "MathUtils.h"
 
+#include <windows.h>
+#include <process.h>
 #include <stdio.h>
 #include <vector>
 
 namespace nmj
 {
+	// NOTE: We should probably query the CPU for it's cores and hyper-threading and decide this
+	//       based on that information.
+	enum { DefaultThreadAmount = 8 };
+
+	struct Application;
+
 	struct Camera
 	{
 		float3 pos;
@@ -39,6 +47,12 @@ namespace nmj
 		std::vector<SceneObject> objects;
 	};
 
+	struct ThreadData
+	{
+		U32 index;
+		Application *app;
+	};
+
 	struct Application
 	{
 		PlatformAPI *api;
@@ -53,6 +67,11 @@ namespace nmj
 		U32 player_flags;
 
 		// Rasterizer
+		U32 rasterizer_event_id;
+		HANDLE start_rasterization_event[2];
+		HANDLE rasterizer_threads[DefaultThreadAmount];
+		HANDLE rasterization_finished_event[DefaultThreadAmount];
+		ThreadData rasterizer_data[DefaultThreadAmount];
 		RasterizerOutput framebuffer;
 		std::vector<RasterizerInput> rasterizer_input;
 
@@ -121,6 +140,45 @@ namespace nmj
 
 		CreateIdentity(scene.objects[0].transform);
 		CreateTranslate(scene.objects[1].transform, float3(3.0f, 0.0f, 0.0f));
+	}
+
+	unsigned int (__stdcall RasterizerThread)(void *userdata)
+	{
+		ThreadData *thread_data = (ThreadData *)userdata;
+		U32 thread_index = thread_data->index;
+		Application &app = *thread_data->app;
+
+		U32 event_id = 0;
+		for (;;)
+		{
+			WaitForSingleObject(app.start_rasterization_event[event_id], INFINITE);
+			event_id = (event_id + 1) % 2;
+
+			RasterizerState state;
+			state.flags = RasterizerFlagColorWrite | RasterizerFlagDepthWrite | RasterizerFlagDepthTest;
+			state.output = &app.framebuffer;
+			Rasterize(state, app.rasterizer_input.data(), U32(app.rasterizer_input.size()), thread_index, DefaultThreadAmount);
+
+			SetEvent(app.rasterization_finished_event[thread_index]);
+		}
+		// return 0;
+	}
+
+	void CreateRasterizerThreads(Application &app)
+	{
+		app.rasterizer_event_id = 0;
+		app.start_rasterization_event[0] = CreateEvent(NULL, TRUE, FALSE, NULL);
+		app.start_rasterization_event[1] = CreateEvent(NULL, TRUE, FALSE, NULL);
+
+		for (U32 i = 0; i < DefaultThreadAmount; ++i)
+		{
+			app.rasterizer_data[i].index = i;
+			app.rasterizer_data[i].app = &app;
+
+			app.rasterization_finished_event[i] = CreateEvent(NULL, FALSE, FALSE, NULL);
+
+			app.rasterizer_threads[i] = (HANDLE)_beginthreadex(NULL, 0, RasterizerThread, &app.rasterizer_data[i], 0, NULL);
+		}
 	}
 
 	void OnKeyboardEvent(void *userdata, KeyCode code, bool down)
@@ -225,17 +283,23 @@ namespace nmj
 		// Render scene
 		app.render_scene_time = GetTime(app.api);
 		{
+			// Calculate view_projection matrix.
 			float4 camera_transform[4], camera_projection[4], view_projection[4];
 			CreateCameraTransform(camera_transform, app.camera.pos, app.camera.axis);
 			CreatePerspectiveProjection(camera_projection, app.camera.fov, float(app.framebuffer.width) / float(app.framebuffer.height), 0.1f, 100.0f);
 			Mul(view_projection, camera_transform, camera_projection);
 
+			// Build rasterizer input commands.
 			Build(app.rasterizer_input, app.scene, view_projection);
 
-			RasterizerState state;
-			state.flags = RasterizerFlagColorWrite | RasterizerFlagDepthWrite | RasterizerFlagDepthTest;
-			state.output = &app.framebuffer;
-			Rasterize(state, app.rasterizer_input.data(), U32(app.rasterizer_input.size()), 0, 1);
+			// Start the rasterizer threads
+			U32 event_id = app.rasterizer_event_id;
+			SetEvent(app.start_rasterization_event[event_id]);
+
+			// Wait for the threads to finish.
+			WaitForMultipleObjects(DefaultThreadAmount, app.rasterization_finished_event, TRUE, INFINITE);
+			ResetEvent(app.start_rasterization_event[event_id]);
+			app.rasterizer_event_id = (event_id + 1) % 2;
 		}
 		app.render_scene_time = GetTime(app.api) - app.render_scene_time;
 
@@ -308,15 +372,18 @@ namespace nmj
 		app.renderer = CreateSoftwareRenderer(api, 1280, 720, false);
 
 		// Load default font.
-		app.font = CreateFont("C:\\Windows\\Fonts\\calibrib.ttf", 18.0f);
+		app.font = CreateFontFromFile("C:\\Windows\\Fonts\\calibrib.ttf", 18.0f);
 
-		// Initialize the default framebuffer.
+		// Initialize the rasterizer data
 		{
+			// Default framebuffer
 			app.framebuffer.width = 1280;
 			app.framebuffer.height = 720;
-
 			U32 size = GetRequiredMemoryAmount(app.framebuffer, true, true);
 			Initialize(app.framebuffer, malloc(size), true, true);
+
+			// Threads
+			CreateRasterizerThreads(app);
 		}
 
 		// Frame update loop

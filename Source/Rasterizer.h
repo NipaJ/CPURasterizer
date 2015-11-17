@@ -7,6 +7,7 @@
 namespace nmj
 {
 	struct LockBufferInfo;
+	struct TriangleBin;
 
 	enum
 	{
@@ -40,42 +41,33 @@ namespace nmj
 		 * | RGB1 RGB2
 		 * | RGB3 RGB4
 		 * Y
-		 *
-		 * You can access block of pixels like this:
-		 * char *block = (char *)color_buffer;
-		 * block += color_pitch * (y / 2);
-		 * block += (x / 2) * 16;
 		 */
 		void *color_buffer;
 
 		/**
-		 * 16bit unsigned normalized depth buffer.
+		 * 24bit unsigned normalized depth buffer with 8bit stencil buffer.
 		 *
-		 * Buffer should be rounded up to size that matches the 4x2 block
+		 * Buffer should be rounded up to size that matches the 2x2 block
 		 * layout and 16 byte alignment is required.
 		 *
-		 * The memory is packed as 4x2 pixels block in following layout:
-		 * 00: D1 D2 D3 D4 
-		 * 08: D5 D6 D7 D8
+		 * The memory is packed as 2x2 pixels block in following layout:
+		 * 00: D1 S1 D2 S2
+		 * 08: D3 S3 D4 S4
 		 *
 		 * From screen-space layout of:
-		 *  ------------ X
-		 * | D1 D2 D3 D4 
-		 * | D5 D6 D7 D8
+		 *  -------- X
+		 * | DS1 DS2 
+		 * | DS3 DS4
 		 * Y
-		 *
-		 * You can access block of pixels like this:
-		 * U8 *block = (U8 *)depth_buffer;
-		 * block += depth_pitch * (y / 2);
-		 * block += (x / 4) * 16;
 		 */
 		void *depth_buffer;
 
 		/**
-		 * Byte offset to step one row of 2x2 blocks.
+		 * Triangle bin
+		 *
+		 * Reserved for internal usage.
 		 */
-		U32 color_pitch;
-		U32 depth_pitch;
+		TriangleBin *bin;
 
 		/**
 		 * Output resolution.
@@ -89,7 +81,7 @@ namespace nmj
 	struct RasterizerInput
 	{
 		/* Vertex transform matrix, using row-vectors. */
-		_declspec(align(16)) float4 transform[4];
+		float4 transform[4];
 
 		/**
 		 * Per vertex information.

@@ -4,6 +4,7 @@
 #pragma once
 #include <assert.h>
 #include <stdint.h>
+#include <stddef.h>
 
 // Disable some warning level 4 warnings, that are not helpful.
 #pragma warning(disable : 4201)
@@ -69,6 +70,13 @@ namespace nmj
 		addr += mask;
 		addr &= ~mask;
 		return (T *)addr;
+	}
+
+	/* Round up to specified unit. */
+	template <typename T>
+	NMJ_FORCEINLINE T RoundUpToUnit(const T value, const T unit)
+	{
+		return (value + (unit - 1)) / unit;
 	}
 }
 
