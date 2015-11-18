@@ -72,11 +72,11 @@ namespace nmj
 		return (T *)addr;
 	}
 
-	/* Round up to specified unit. */
+	/* Divide and round up the results. */
 	template <typename T>
-	NMJ_FORCEINLINE T RoundUpToUnit(const T value, const T unit)
+	NMJ_FORCEINLINE T DivWithRoundUp(const T a, const T b)
 	{
-		return (value + (unit - 1)) / unit;
+		return (a + (b - 1)) / b;
 	}
 }
 

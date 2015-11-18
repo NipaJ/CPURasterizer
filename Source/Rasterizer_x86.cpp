@@ -25,6 +25,8 @@ namespace nmj
 	enum { MaxTrianglesPerTile = 4096 }; // TODO: Make this dynamic.
 	enum { TileSizeX = 32 };
 	enum { TileSizeY = 32 };
+	enum { ColorTileBytes = TileSizeX * TileSizeY * 4 };
+	enum { DepthTileBytes = TileSizeX * TileSizeY * 4 };
 
 	// Triangle bin
 	struct TriangleBin
@@ -66,17 +68,17 @@ namespace nmj
 		// Transform Y to point down.
 		transform_matrix[1] = _mm_xor_ps(transform_matrix[1], _mm_set1_ps(-0.0f));
 
-		// Screen coordinates for center, block position and size.
+		// Screen coordinates.
 		S32 scx = screen_width / 2;
 		S32 scy = screen_height / 2;
 		S32 sx = tile_x * TileSizeX;
 		S32 sy = tile_y * TileSizeY;
 
-		// Scissor rect
-		S32 scissor_min_x = sx - scx;
-		S32 scissor_min_y = sy - scy;
-		S32 scissor_max_x = Min((sx + TileSizeX - 1) - scx, scx - 1);
-		S32 scissor_max_y = Min((sy + TileSizeY - 1) - scy, scx - 1);
+		// Tile rectangle.
+		S32 tile_min_x = sx - scx;
+		S32 tile_min_y = sy - scy;
+		S32 tile_max_x = Min((sx + TileSizeX - 1) - scx, scx - 1);
+		S32 tile_max_y = Min((sy + TileSizeY - 1) - scy, scx - 1);
 
 		// TODO: This could probably be combined with the matrix above? Should think about it.
 		float xscale = float(scx << PixelFracBits);
@@ -157,15 +159,15 @@ namespace nmj
 
 			// Clip off-tile triangles.
 			// NOTE: If the binning process would be accurate enough, we could just ignore this.
-			if (bounds[0][0] > scissor_max_x || bounds[0][1] > scissor_max_y)
+			if (bounds[0][0] > tile_max_x || bounds[0][1] > tile_max_y)
 				continue;
-			if (bounds[1][0] < scissor_min_x || bounds[1][1] < scissor_min_y)
+			if (bounds[1][0] < tile_min_x || bounds[1][1] < tile_min_y)
 				continue;
 
-			bounds[0][0] = Max(Min(bounds[0][0], scissor_max_x), scissor_min_x);
-			bounds[0][1] = Max(Min(bounds[0][1], scissor_max_y), scissor_min_y);
-			bounds[1][0] = Max(Min(bounds[1][0], scissor_max_x), scissor_min_x);
-			bounds[1][1] = Max(Min(bounds[1][1], scissor_max_y), scissor_min_y);
+			bounds[0][0] = Max(Min(bounds[0][0], tile_max_x), tile_min_x);
+			bounds[0][1] = Max(Min(bounds[0][1], tile_max_y), tile_min_y);
+			bounds[1][0] = Max(Min(bounds[1][0], tile_max_x), tile_min_x);
+			bounds[1][1] = Max(Min(bounds[1][1], tile_max_y), tile_min_y);
 
 			// Calculate variables for stepping
 			S32 bcoord_row[3], bcoord_xstep[3], bcoord_ystep[3];
@@ -235,15 +237,18 @@ namespace nmj
 			char *out_color_row;
 			char *out_depth_row;
 			{
+				S32 x_in_tile = bounds[0][0] - tile_min_x;
+				S32 y_in_tile = bounds[0][1] - tile_min_y;
+
 				if (ColorWrite)
 				{
 					out_color_row = (char *)color_buffer;
-					out_color_row += (bounds[0][1] * S32(screen_width) + bounds[0][0]) * 4;
+					out_color_row += (y_in_tile * TileSizeX + x_in_tile) * 4;
 				}
 				if (DepthWrite || DepthTest)
 				{
 					out_depth_row = (char *)depth_buffer;
-					out_depth_row += (bounds[0][1] * S32(screen_width) + bounds[0][0]) * 4;
+					out_depth_row += (y_in_tile * TileSizeX + x_in_tile) * 4;
 				}
 			}
 
@@ -347,9 +352,9 @@ namespace nmj
 				} // X loop
 
 				if (ColorWrite)
-					out_color_row += screen_width * 4;
+					out_color_row += TileSizeX * 4;
 				if (DepthWrite || DepthTest)
-					out_depth_row += screen_width * 4;
+					out_depth_row += TileSizeX * 4;
 
 				bcoord_row[0] += bcoord_ystep[0];
 				bcoord_row[1] += bcoord_ystep[1];
@@ -369,8 +374,8 @@ namespace nmj
 
 	U32 GetRequiredMemoryAmount(const RasterizerOutput &self, bool color, bool depth)
 	{
-		const U32 width = (self.width + 1) / 2;
-		const U32 height = (self.height + 1) / 2;
+		const U32 width = DivWithRoundUp<U32>(self.width, TileSizeX);
+		const U32 height = DivWithRoundUp<U32>(self.height, TileSizeY);
 
 		U32 ret = 16;
 
@@ -378,7 +383,7 @@ namespace nmj
 		{
 			ret = GetAligned(ret, 16);
 
-			U32 pitch = width * ColorBlockBytes;
+			U32 pitch = width * ColorTileBytes;
 			ret += pitch * height;
 		}
 
@@ -386,27 +391,29 @@ namespace nmj
 		{
 			ret = GetAligned(ret, 16);
 
-			U32 pitch = width * DepthBlockBytes;
+			U32 pitch = width * DepthTileBytes;
 			ret += pitch * height;
 		}
 
 		// Bins
+#if 0
 		{
 			ret = GetAligned(ret, 16);
 
-			const U32 x_tiles = RoundUpToUnit<U32>(width, TileSizeX);
-			const U32 y_tiles = RoundUpToUnit<U32>(height, TileSizeY);
+			const U32 x_tiles = DivWithRoundUp<U32>(width, TileSizeX);
+			const U32 y_tiles = DivWithRoundUp<U32>(height, TileSizeY);
 
 			ret += x_tiles * y_tiles * sizeof(TriangleBin);
 		}
+#endif
 
 		return ret;
 	}
 
 	void Initialize(RasterizerOutput &self, void *memory, bool color, bool depth)
 	{
-		const U32 width = (self.width + 1) / 2;
-		const U32 height = (self.height + 1) / 2;
+		const U32 width = DivWithRoundUp<U32>(self.width, TileSizeX);
+		const U32 height = DivWithRoundUp<U32>(self.height, TileSizeY);
 
 		char *alloc_stack = (char *)memory;
 
@@ -414,7 +421,7 @@ namespace nmj
 		{
 			alloc_stack = GetAligned(alloc_stack, 16);
 
-			U32 pitch = width * ColorBlockBytes;
+			U32 pitch = width * ColorTileBytes;
 			self.color_buffer = alloc_stack;
 			alloc_stack += pitch * height;
 		}
@@ -423,21 +430,23 @@ namespace nmj
 		{
 			alloc_stack = GetAligned(alloc_stack, 16);
 
-			U32 pitch = width * DepthBlockBytes;
+			U32 pitch = width * DepthTileBytes;
 			self.depth_buffer = alloc_stack;
 			alloc_stack += pitch * height;
 		}
 
 		// Bins
+#if 0
 		{
 			alloc_stack = GetAligned(alloc_stack, 16);
 
-			const U32 x_tiles = RoundUpToUnit<U32>(width, TileSizeX);
-			const U32 y_tiles = RoundUpToUnit<U32>(height, TileSizeY);
+			const U32 x_tiles = DivWithRoundUp<U32>(width, TileSizeX);
+			const U32 y_tiles = DivWithRoundUp<U32>(height, TileSizeY);
 
 			self.bin = (TriangleBin *)alloc_stack;
 			alloc_stack += x_tiles * y_tiles * sizeof(TriangleBin);
 		}
+#endif
 	}
 
 	void Rasterize(RasterizerState &state, const RasterizerInput *input, U32 input_count, U32 split_index, U32 num_splits)
@@ -492,15 +501,9 @@ namespace nmj
 		if (depth_buffer == NULL)
 			flags &= ~RasterizerFlagDepthWrite;
 
-		// Offset buffers to center.
-		// TODO: Get rid of this.
-		const U32 center_offset = ((screen_height / 2) * screen_width + screen_width / 2);
-		color_buffer += center_offset * 4;
-		depth_buffer += center_offset * 4;
-
 		// Tile information
-		const U32 x_tile_count = RoundUpToUnit<U32>(screen_width, TileSizeX);
-		const U32 y_tile_count = RoundUpToUnit<U32>(screen_height, TileSizeY);
+		const U32 x_tile_count = DivWithRoundUp<U32>(screen_width, TileSizeX);
+		const U32 y_tile_count = DivWithRoundUp<U32>(screen_height, TileSizeY);
 		const U32 tile_count = x_tile_count * y_tile_count;
 
 		while (input_count--)
@@ -519,63 +522,113 @@ namespace nmj
 				RasterizeTile = pipeline[lookup_index];
 			}
 
+			char *out_color = color_buffer + split_index * ColorTileBytes;
+			char *out_depth = depth_buffer + split_index * DepthTileBytes;
 			for (U32 index = split_index; index < tile_count; index += num_splits)
 			{
-				RasterizeTile(index % x_tile_count, index / x_tile_count, screen_width, screen_height, color_buffer, depth_buffer, ri);
+				RasterizeTile(index % x_tile_count, index / x_tile_count, screen_width, screen_height, out_color, out_depth, ri);
+
+				out_color += ColorTileBytes * num_splits;
+				out_depth += DepthTileBytes * num_splits;
 			}
 		}
 	}
 
 	void ClearColor(RasterizerOutput &output, float4 value, U32 split_index, U32 num_splits)
 	{
-		// TODO: Handle splits.
-		U32 *out = (U32 *)output.color_buffer;
+		const U32 x_tile_count = DivWithRoundUp<U32>(output.width, TileSizeX);
+		const U32 y_tile_count = DivWithRoundUp<U32>(output.height, TileSizeY);
+		const U32 tile_count = x_tile_count * y_tile_count;
 
 		U32 cv = U8(value.x * 255.0f) | U8(value.y * 255.0f) << 8 | U8(value.z * 255.0f) << 16 | U8(value.w * 255.0f) << 24;
-		U32 size = output.width * output.height;
-		while (size--)
-			*out++ = cv;
+
+		char *out = ((char *)output.color_buffer) + split_index * ColorTileBytes;
+		for (U32 index = split_index; index < tile_count; index += num_splits)
+		{
+			for (U32 count = TileSizeX * TileSizeY; count--;)
+			{
+				*(U32 *)out = cv;
+				out += 4;
+			}
+
+			out += (num_splits - 1) * ColorTileBytes;
+		}
 	}
 
 	void ClearDepth(RasterizerOutput &output, float value, U32 split_index, U32 num_splits)
 	{
-		// TODO: Handle splits.
-		U32 *out = (U32 *)output.depth_buffer;
+		const U32 x_tile_count = DivWithRoundUp<U32>(output.width, TileSizeX);
+		const U32 y_tile_count = DivWithRoundUp<U32>(output.height, TileSizeY);
+		const U32 tile_count = x_tile_count * y_tile_count;
 
 		U32 cv = U32(value * float(0xFFFFFF));
-		U32 size = output.width * output.height;
-		while (size--)
-			*out++ = cv;
+
+		char *out = ((char *)output.depth_buffer) + split_index * DepthTileBytes;
+		for (U32 index = split_index; index < tile_count; index += num_splits)
+		{
+			for (U32 count = TileSizeX * TileSizeY; count--;)
+			{
+				*(U32 *)out = cv;
+				out += 4;
+			}
+
+			out += (num_splits - 1) * DepthTileBytes;
+		}
 	}
 
 	void Blit(LockBufferInfo &output, RasterizerOutput &input, U32 split_index, U32 num_splits)
 	{
-		U8 *in = (U8 *)input.color_buffer;
-		char *out = (char *)output.data;
+		NMJ_ASSERT(output.width % 4 == 0);
+		NMJ_ASSERT(output.width == input.width);
+		NMJ_ASSERT(output.height == input.height);
+
+		const U32 width = input.width;
+		const U32 height = input.height;
+
+		const U32 x_tile_count = DivWithRoundUp<U32>(width, TileSizeX);
+		const U32 y_tile_count = DivWithRoundUp<U32>(height, TileSizeY);
+		const U32 tile_count = x_tile_count * y_tile_count;
 
 		__m128i x_mask = _mm_set1_epi32(0x00FF0000);
 		__m128i y_mask = _mm_set1_epi32(0x000000FF);
 		__m128i zw_mask = _mm_set1_epi32(0xFF00FF00);
 
-		for (U32 y = input.height; y--; )
+		char *in_tile = ((char *)input.color_buffer) + split_index * ColorTileBytes;
+		for (U32 index = split_index; index < tile_count; index += num_splits)
 		{
-			U8 *p = (U8 *)out;
-			for (U32 x = input.width; x != 0; x -= 4)
+			const U32 sx = (index % x_tile_count) * TileSizeX;
+			const U32 sy = (index / x_tile_count) * TileSizeY;
+			const U32 xcount = Min(width - sx, TileSizeX);
+			const U32 ycount = Min(height - sy, TileSizeY);
+
+			char *out_row = ((char *)output.data) + sy * output.pitch + sx * 4;
+			char *in_row = in_tile;
+
+			for (U32 y = ycount; y--; )
 			{
-				__m128i simd_x = _mm_load_si128((__m128i *)in);
-				__m128i simd_z = simd_x;
-				__m128i simd_yw = simd_x;
+				char *out = out_row;
+				char *in = in_row;
 
-				simd_x = _mm_and_si128(_mm_slli_epi32(simd_x, 16), x_mask);
-				simd_z = _mm_and_si128(_mm_srli_epi32(simd_z, 16), y_mask);
-				simd_yw = _mm_and_si128(simd_yw, zw_mask);
+				for (U32 x = xcount / 4; x--; )
+				{
+					__m128i simd_x = _mm_load_si128((__m128i *)in);
+					__m128i simd_z = simd_x;
+					__m128i simd_yw = simd_x;
 
-				_mm_storeu_si128((__m128i *)p, _mm_or_si128(_mm_or_si128(simd_x, simd_z), simd_yw));
-				p += 16;
-				in += 16;
+					simd_x = _mm_and_si128(_mm_slli_epi32(simd_x, 16), x_mask);
+					simd_z = _mm_and_si128(_mm_srli_epi32(simd_z, 16), y_mask);
+					simd_yw = _mm_and_si128(simd_yw, zw_mask);
+
+					_mm_storeu_si128((__m128i *)out, _mm_or_si128(_mm_or_si128(simd_x, simd_z), simd_yw));
+					out += 16;
+					in += 16;
+				}
+
+				in_row += TileSizeX * 4;
+				out_row += output.pitch;
 			}
 
-			out += output.pitch;
+			in_tile += num_splits * ColorTileBytes;
 		}
 	}
 }
