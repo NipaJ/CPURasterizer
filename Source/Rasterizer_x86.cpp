@@ -623,15 +623,15 @@ namespace nmj
 		const U32 y_tile_count = DivWithRoundUp<U32>(output.height, TileSizeY);
 		const U32 tile_count = x_tile_count * y_tile_count;
 
-		U32 cv = U8(value.x * 255.0f) | U8(value.y * 255.0f) << 8 | U8(value.z * 255.0f) << 16 | U8(value.w * 255.0f) << 24;
+		__m128i cv = _mm_set1_epi32(U8(value.x * 255.0f) | U8(value.y * 255.0f) << 8 | U8(value.z * 255.0f) << 16 | U8(value.w * 255.0f) << 24);
 
 		char *out = ((char *)output.color_buffer) + split_index * ColorTileBytes;
 		for (U32 index = split_index; index < tile_count; index += num_splits)
 		{
-			for (U32 count = TileSizeX * TileSizeY; count--;)
+			for (U32 count = TileSizeXInBlocks * TileSizeYInBlocks; count--;)
 			{
-				*(U32 *)out = cv;
-				out += 4;
+				_mm_store_si128((__m128i *)out, cv);
+				out += ColorBlockBytes;
 			}
 
 			out += (num_splits - 1) * ColorTileBytes;
@@ -644,15 +644,15 @@ namespace nmj
 		const U32 y_tile_count = DivWithRoundUp<U32>(output.height, TileSizeY);
 		const U32 tile_count = x_tile_count * y_tile_count;
 
-		U32 cv = U32(value * float(0xFFFFFF));
+		__m128i cv = _mm_set1_epi32(U32(value * float(0xFFFFFF)));
 
 		char *out = ((char *)output.depth_buffer) + split_index * DepthTileBytes;
 		for (U32 index = split_index; index < tile_count; index += num_splits)
 		{
-			for (U32 count = TileSizeX * TileSizeY; count--;)
+			for (U32 count = TileSizeXInBlocks * TileSizeYInBlocks; count--; )
 			{
-				*(U32 *)out = cv;
-				out += 4;
+				_mm_store_si128((__m128i *)out, cv);
+				out += DepthBlockBytes;
 			}
 
 			out += (num_splits - 1) * DepthTileBytes;
@@ -711,8 +711,8 @@ namespace nmj
 					__m128i xyz1 = _mm_or_si128(_mm_or_si128(simd_x0, simd_z0), simd_yw0);
 					__m128i xyz2 = _mm_or_si128(_mm_or_si128(simd_x1, simd_z1), simd_yw1);
 
-					_mm_storeu_si128((__m128i *)out0, _mm_unpacklo_epi64(xyz1, xyz2));
-					_mm_storeu_si128((__m128i *)out1, _mm_unpackhi_epi64(xyz1, xyz2));
+					_mm_stream_si128((__m128i *)out0, _mm_unpacklo_epi64(xyz1, xyz2));
+					_mm_stream_si128((__m128i *)out1, _mm_unpackhi_epi64(xyz1, xyz2));
 
 					out0 += 16;
 					out1 += 16;
