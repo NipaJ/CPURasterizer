@@ -2,11 +2,9 @@
  * Software rasterization API.
  */
 #pragma once
-#include "Vector.h"
 
 namespace nmj
 {
-	struct LockBufferInfo;
 	struct TriangleBin;
 
 	enum
@@ -81,15 +79,15 @@ namespace nmj
 	struct RasterizerInput
 	{
 		/* Vertex transform matrix, using row-vectors. */
-		float4 transform[4];
+		float transform[4][4];
 
 		/**
 		 * Per vertex information.
 		 * All but vertices are optional and can be NULL.
 		 */
-		const float3 *vertices;
-		const float4 *colors;
-		const float2 *texcoords;
+		const float *vertices; // xyz per vertex
+		const float *colors;   // rgba per vertex
+		const float *texcoords; // xy per vertex
 
 		/* Vertex indices for the triangles. */
 		const U16 *indices;
@@ -137,7 +135,7 @@ namespace nmj
 	 * You can split the work into N amount of calls, which can be processed
 	 * in parallel.
 	 */
-	void ClearColor(RasterizerOutput &output, float4 value, U32 split_index = 0, U32 num_splits = 1);
+	void ClearColor(RasterizerOutput &output, float r, float g, float b, float a, U32 split_index = 0, U32 num_splits = 1);
 
 	/**
 	 * Clear depth buffer
@@ -145,7 +143,7 @@ namespace nmj
 	 * You can split the work into N amount of calls, which can be processed
 	 * in parallel.
 	 */
-	void ClearDepth(RasterizerOutput &output, float value, U32 split_index = 0, U32 num_splits = 1);
+	void ClearDepth(RasterizerOutput &output, float depth, U8 stencil, U32 split_index = 0, U32 num_splits = 1);
 
 	/**
 	 * Blit output buffer to screen.
@@ -153,6 +151,6 @@ namespace nmj
 	 * You can split the work into N amount of calls, which can be processed
 	 * in parallel.
 	 */
-	void Blit(LockBufferInfo &output, RasterizerOutput &input, U32 split_index = 0, U32 num_splits = 1);
+	void Blit(void *output, U32 pitch, RasterizerOutput &input, U32 split_index = 0, U32 num_splits = 1);
 }
 
