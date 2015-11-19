@@ -288,7 +288,7 @@ namespace nmj
 		// Calculate view_projection matrix.
 		float4 camera_transform[4], camera_projection[4], view_projection[4];
 		CreateCameraTransform(camera_transform, app.camera.pos, app.camera.axis);
-		CreatePerspectiveProjection(camera_projection, app.camera.fov, float(app.framebuffer.width) / float(app.framebuffer.height), 0.1f, 100.0f);
+		CreatePerspectiveProjection(camera_projection, app.camera.fov, float(app.framebuffer.width) / float(app.framebuffer.height), 0.5f, 100.0f);
 		Mul(view_projection, camera_transform, camera_projection);
 
 		// Build rasterizer input commands.
