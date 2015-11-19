@@ -54,10 +54,10 @@ namespace nmj
 
 	/* Align size with power of two value. */
 	template <typename T>
-	NMJ_FORCEINLINE T GetAligned(T value, UPtr alignment)
+	NMJ_FORCEINLINE T GetAligned(T value, T alignment)
 	{
-		const UPtr mask = alignment - 1;
-		return (value + mask) & ~T(mask);
+		const T mask = alignment - 1;
+		return (value + mask) & ~mask;
 	}
 
 	/* Align pointer with power of two value. */

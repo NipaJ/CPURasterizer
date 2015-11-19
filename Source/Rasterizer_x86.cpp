@@ -6,6 +6,8 @@
 #include "Matrix.h"
 #include <emmintrin.h>
 
+#include <string.h>
+
 // Disable this warning, since our template trick relies heavily on conditional constant optimizations.
 #pragma warning(disable : 4127)
 
@@ -15,19 +17,28 @@ namespace nmj
 	enum { PixelFracBits = 4 };
 	enum { PixelFracUnit = 1 << PixelFracBits };
 
+	// Buffer settings
+	enum { ColorBytes = 4 };
+	enum { DepthBytes = 4 };
+
 	// SIMD block settings
 	enum { BlockSizeX = 2 };
 	enum { BlockSizeY = 2 };
-	enum { ColorBlockBytes = 16 };
-	enum { DepthBlockBytes = 16 };
+	enum { ColorBlockBytes = BlockSizeX * BlockSizeY * ColorBytes };
+	enum { DepthBlockBytes = BlockSizeX * BlockSizeY * DepthBytes };
 
 	// Tile settings
 	enum { MaxTrianglesPerTile = 4096 }; // TODO: Make this dynamic.
 	enum { TileSizeX = 32 };
 	enum { TileSizeY = 32 };
-	enum { ColorTileBytes = TileSizeX * TileSizeY * 4 };
-	enum { DepthTileBytes = TileSizeX * TileSizeY * 4 };
+	enum { TileSizeXInBlocks = TileSizeX / BlockSizeX };
+	enum { TileSizeYInBlocks = TileSizeY / BlockSizeY };
+	enum { ColorTilePitch = TileSizeXInBlocks * ColorBlockBytes };
+	enum { DepthTilePitch = TileSizeXInBlocks * DepthBlockBytes };
+	enum { ColorTileBytes = TileSizeX * TileSizeY * ColorBytes };
+	enum { DepthTileBytes = TileSizeX * TileSizeY * DepthBytes };
 
+#if 0
 	// Triangle bin
 	struct TriangleBin
 	{
@@ -40,6 +51,7 @@ namespace nmj
 
 		U32 triangle_count;
 	};
+#endif
 
 	// Function type for the RasterizeTile function.
 	typedef void RasterizeTileFunc(
@@ -48,6 +60,14 @@ namespace nmj
 		void *color_buffer, void *depth_buffer,
 		const RasterizerInput &input
 	);
+
+	// Multiply two SSE epi32 integer vectors.
+	NMJ_FORCEINLINE __m128i MulEpi32(__m128i a, __m128i b)
+	{
+		__m128i lo = _mm_mul_epu32(a, b);
+		__m128i hi = _mm_mul_epu32(_mm_shuffle_epi32(a, _MM_SHUFFLE(1, 3, 1, 1)), _mm_shuffle_epi32(b, _MM_SHUFFLE(1, 3, 1, 1)));
+		return _mm_unpacklo_epi32(_mm_shuffle_epi32(lo, _MM_SHUFFLE(0, 0, 2, 0)), _mm_shuffle_epi32(hi, _MM_SHUFFLE(0, 0, 2, 0)));
+	}
 
 	// Use template to easily generate multiple functions with different rasterizer state.
 	template <bool ColorWrite, bool DepthWrite, bool DepthTest, bool DiffuseMap, bool VertexColor>
@@ -77,8 +97,8 @@ namespace nmj
 		// Tile rectangle.
 		S32 tile_min_x = sx - scx;
 		S32 tile_min_y = sy - scy;
-		S32 tile_max_x = Min((sx + TileSizeX - 1) - scx, scx - 1);
-		S32 tile_max_y = Min((sy + TileSizeY - 1) - scy, scx - 1);
+		S32 tile_max_x = Min((sx + TileSizeX) - scx, scx - 1);
+		S32 tile_max_y = Min((sy + TileSizeY) - scy, scx - 1);
 
 		// TODO: This could probably be combined with the matrix above? Should think about it.
 		float xscale = float(scx << PixelFracBits);
@@ -92,8 +112,8 @@ namespace nmj
 		for (U32 count = input.triangle_count; count--; )
 		{
 			// Fetch triangle vertex information
-			_declspec(align(16)) float4 v[3];
-			_declspec(align(16)) float4 c[3];
+			__declspec(align(16)) float4 v[3];
+			float4 c[3];
 			{
 				const U16 i0 = indices[0];
 				const U16 i1 = indices[1];
@@ -124,9 +144,7 @@ namespace nmj
 				_mm_store_ps(v[i].v, result);
 			}
 
-			// Hack rejection for planes, that cross near plane or far-plane
-			if (v[0].z > v[0].w || v[1].z > v[1].w || v[2].z > v[2].w)
-				continue;
+			// Hack rejection for planes, that cross near plane
 			if (v[0].z < 0.0f || v[1].z < 0.0f || v[2].z < 0.0f)
 				continue;
 
@@ -139,7 +157,7 @@ namespace nmj
 			coord[2][0] = S32(v[2].x * xscale / v[2].w);
 			coord[2][1] = S32(v[2].y * yscale / v[2].w);
 
-			// Precalculate barycentric conversion constants.
+			// Some common constants for the barycentric calculations.
 			const S32 coord21x = coord[2][0] - coord[1][0];
 			const S32 coord21y = coord[2][1] - coord[1][1];
 			const S32 coord02x = coord[0][0] - coord[2][0];
@@ -164,96 +182,135 @@ namespace nmj
 			if (bounds[1][0] < tile_min_x || bounds[1][1] < tile_min_y)
 				continue;
 
-			bounds[0][0] = Max(Min(bounds[0][0], tile_max_x), tile_min_x);
-			bounds[0][1] = Max(Min(bounds[0][1], tile_max_y), tile_min_y);
-			bounds[1][0] = Max(Min(bounds[1][0], tile_max_x), tile_min_x);
-			bounds[1][1] = Max(Min(bounds[1][1], tile_max_y), tile_min_y);
+			// Make sure that the bounds are block aligned
+			bounds[0][0] = Max(Min(bounds[0][0], tile_max_x), tile_min_x) & ~(BlockSizeX - 1);
+			bounds[0][1] = Max(Min(bounds[0][1], tile_max_y), tile_min_y) & ~(BlockSizeY - 1);
+			bounds[1][0] = (Max(Min(bounds[1][0] + 1, tile_max_x), tile_min_x) + (BlockSizeX - 1)) & ~(BlockSizeX - 1);
+			bounds[1][1] = (Max(Min(bounds[1][1] + 1, tile_max_y), tile_min_y) + (BlockSizeY - 1)) & ~(BlockSizeY - 1);
 
 			// Calculate variables for stepping
-			S32 bcoord_row[3], bcoord_xstep[3], bcoord_ystep[3];
-			float	inv_w_row, inv_w_xstep, inv_w_ystep;
-			float	z_row, z_xstep, z_ystep;
-			float4 pers_color_row, pers_color_xstep, pers_color_ystep;
+			__m128i bcoord_row[3], bcoord_xstep[3], bcoord_ystep[3];
+			__m128 inv_w_row, inv_w_xstep, inv_w_ystep;
+			__m128 z_row, z_xstep, z_ystep;
+			__m128 pers_color_row[3], pers_color_xstep[3], pers_color_ystep[3];
 			{
-				// Fixed-point min bounds with 0.5 subtracted from it (we want to sample from the middle of pixel).
-				S32 fixed_bounds[2];
-				fixed_bounds[0] = (bounds[0][0] << PixelFracBits) - PixelFracUnit / 2;
-				fixed_bounds[1] = (bounds[0][1] << PixelFracBits) - PixelFracUnit / 2;
-
 				// Barycentric integer coordinates
-				bcoord_row[0] = ((coord21x * (fixed_bounds[1] - coord[1][1])) >> PixelFracBits) - ((coord21y * (fixed_bounds[0] - coord[1][0])) >> PixelFracBits);
-				bcoord_row[1] = ((coord02x * (fixed_bounds[1] - coord[2][1])) >> PixelFracBits) - ((coord02y * (fixed_bounds[0] - coord[2][0])) >> PixelFracBits);
-				bcoord_row[2] = triarea_x2 - bcoord_row[0] - bcoord_row[1];
-				bcoord_xstep[0] = -coord21y;
-				bcoord_xstep[1] = -coord02y;
-				bcoord_xstep[2] = coord[0][1] - coord[1][1];
-				bcoord_ystep[0] = coord21x;
-				bcoord_ystep[1] = coord02x;
-				bcoord_ystep[2] = coord[1][0] - coord[0][0];
+				{
+					__m128i offsetx = _mm_add_epi32(_mm_set1_epi32(bounds[0][0]), _mm_set_epi32(1, 0, 1, 0));
+					__m128i offsety = _mm_add_epi32(_mm_set1_epi32(bounds[0][1]), _mm_set_epi32(1, 1, 0, 0));
+
+					// 1x1 block steps
+					bcoord_xstep[0] = _mm_set1_epi32(-coord21y);
+					bcoord_xstep[1] = _mm_set1_epi32(-coord02y);
+					bcoord_xstep[2] = _mm_set1_epi32(coord[0][1] - coord[1][1]);
+					bcoord_ystep[0] = _mm_set1_epi32(coord21x);
+					bcoord_ystep[1] = _mm_set1_epi32(coord02x);
+					bcoord_ystep[2] = _mm_set1_epi32(coord[1][0] - coord[0][0]);
+
+					// Triangle start position
+					bcoord_row[0] = _mm_set1_epi32(((coord21x * -coord[1][1]) >> PixelFracBits) - ((coord21y * -coord[1][0]) >> PixelFracBits));
+					bcoord_row[0] = _mm_add_epi32(bcoord_row[0], MulEpi32(offsetx, bcoord_xstep[0]));
+					bcoord_row[0] = _mm_add_epi32(bcoord_row[0], MulEpi32(offsety, bcoord_ystep[0]));
+					bcoord_row[0] = _mm_sub_epi32(bcoord_row[0], _mm_srai_epi32(bcoord_xstep[0], 1));
+					bcoord_row[0] = _mm_sub_epi32(bcoord_row[0], _mm_srai_epi32(bcoord_ystep[0], 1));
+					bcoord_row[1] = _mm_set1_epi32(((coord02x * -coord[2][1]) >> PixelFracBits) - ((coord02y * -coord[2][0]) >> PixelFracBits));
+					bcoord_row[1] = _mm_add_epi32(bcoord_row[1], MulEpi32(offsetx, bcoord_xstep[1]));
+					bcoord_row[1] = _mm_add_epi32(bcoord_row[1], MulEpi32(offsety, bcoord_ystep[1]));
+					bcoord_row[1] = _mm_sub_epi32(bcoord_row[1], _mm_srai_epi32(bcoord_xstep[1], 1));
+					bcoord_row[1] = _mm_sub_epi32(bcoord_row[1], _mm_srai_epi32(bcoord_ystep[1], 1));
+
+					// Change stepping to 2x2 blocks
+					bcoord_xstep[0] = _mm_slli_epi32(bcoord_xstep[0], 1);
+					bcoord_xstep[1] = _mm_slli_epi32(bcoord_xstep[1], 1);
+					bcoord_xstep[2] = _mm_slli_epi32(bcoord_xstep[2], 1);
+					bcoord_ystep[0] = _mm_slli_epi32(bcoord_ystep[0], 1);
+					bcoord_ystep[1] = _mm_slli_epi32(bcoord_ystep[1], 1);
+					bcoord_ystep[2] = _mm_slli_epi32(bcoord_ystep[2], 1);
+
+					bcoord_row[2] = _mm_sub_epi32(_mm_sub_epi32(_mm_set1_epi32(triarea_x2), bcoord_row[0]), bcoord_row[1]);
+				}
 
 				// Normalized barycentric coordinates as floating point.
-				float inv_triarea_x2f = 1.0f / float(triarea_x2);
-				float bcoordf_row1 = float(bcoord_row[1]) * inv_triarea_x2f;
-				float bcoordf_row2 = float(bcoord_row[2]) * inv_triarea_x2f;
-				float bcoordf_xstep1 = float(bcoord_xstep[1]) * inv_triarea_x2f;
-				float bcoordf_xstep2 = float(bcoord_xstep[2]) * inv_triarea_x2f;
-				float bcoordf_ystep1 = float(bcoord_ystep[1]) * inv_triarea_x2f;
-				float bcoordf_ystep2 = float(bcoord_ystep[2]) * inv_triarea_x2f;
+				__m128 inv_triarea_x2f = _mm_rcp_ps(_mm_cvtepi32_ps(_mm_set1_epi32(triarea_x2)));
+				__m128 bcoordf_row1 = _mm_mul_ps(_mm_cvtepi32_ps(bcoord_row[1]), inv_triarea_x2f);
+				__m128 bcoordf_row2 = _mm_mul_ps(_mm_cvtepi32_ps(bcoord_row[2]), inv_triarea_x2f);
+				__m128 bcoordf_xstep1 = _mm_mul_ps(_mm_cvtepi32_ps(bcoord_xstep[1]), inv_triarea_x2f);
+				__m128 bcoordf_xstep2 = _mm_mul_ps(_mm_cvtepi32_ps(bcoord_xstep[2]), inv_triarea_x2f);
+				__m128 bcoordf_ystep1 = _mm_mul_ps(_mm_cvtepi32_ps(bcoord_ystep[1]), inv_triarea_x2f);
+				__m128 bcoordf_ystep2 = _mm_mul_ps(_mm_cvtepi32_ps(bcoord_ystep[2]), inv_triarea_x2f);
 
 				// W interpolation
-				float inv_w0 = 1.0f / v[0].w;
-				float inv_w1 = 1.0f / v[1].w;
-				float inv_w2 = 1.0f / v[2].w;
-				float inv_w10 = inv_w1 - inv_w0;
-				float inv_w20 = inv_w2 - inv_w0;
-				inv_w_row = inv_w0 + inv_w10 * bcoordf_row1 + inv_w20 * bcoordf_row2;
-				inv_w_xstep = inv_w10 * bcoordf_xstep1 + inv_w20 * bcoordf_xstep2;
-				inv_w_ystep = inv_w10 * bcoordf_ystep1 + inv_w20 * bcoordf_ystep2;
+				__m128 inv_w0 = _mm_rcp_ps(_mm_set1_ps(v[0].w));
+				__m128 inv_w1 = _mm_rcp_ps(_mm_set1_ps(v[1].w));
+				__m128 inv_w2 = _mm_rcp_ps(_mm_set1_ps(v[2].w));
+				__m128 inv_w10 = _mm_sub_ps(inv_w1, inv_w0);
+				__m128 inv_w20 = _mm_sub_ps(inv_w2, inv_w0);
+				inv_w_row = _mm_add_ps(inv_w0, _mm_add_ps(_mm_mul_ps(inv_w10, bcoordf_row1), _mm_mul_ps(inv_w20, bcoordf_row2)));
+				inv_w_xstep = _mm_add_ps(_mm_mul_ps(inv_w10, bcoordf_xstep1), _mm_mul_ps(inv_w20, bcoordf_xstep2));
+				inv_w_ystep = _mm_add_ps(_mm_mul_ps(inv_w10, bcoordf_ystep1), _mm_mul_ps(inv_w20, bcoordf_ystep2));
 
 				// Z interpolation
 				if (DepthWrite || DepthTest)
 				{
-					float z0 = v[0].z * inv_w0;
-					float z10 = (v[1].z * inv_w1) - z0;
-					float z20 = (v[2].z * inv_w2) - z0;
-					z_row = z0 + z10 * bcoordf_row1 + z20 * bcoordf_row2;
-					z_xstep = z10 * bcoordf_xstep1 + z20 * bcoordf_xstep2;
-					z_ystep = z10 * bcoordf_ystep1 + z20 * bcoordf_ystep2;
+					__m128 z0 = _mm_mul_ps(_mm_set1_ps(v[0].z), inv_w0);
+					__m128 z10 = _mm_sub_ps(_mm_mul_ps(_mm_set1_ps(v[1].z), inv_w1), z0);
+					__m128 z20 = _mm_sub_ps(_mm_mul_ps(_mm_set1_ps(v[2].z), inv_w2), z0);
+					z_row = _mm_add_ps(z0, _mm_add_ps(_mm_mul_ps(z10, bcoordf_row1), _mm_mul_ps(z20, bcoordf_row2)));
+					z_xstep = _mm_add_ps(_mm_mul_ps(z10, bcoordf_xstep1), _mm_mul_ps(z20, bcoordf_xstep2));
+					z_ystep = _mm_add_ps(_mm_mul_ps(z10, bcoordf_ystep1), _mm_mul_ps(z20, bcoordf_ystep2));
 				}
 
 				// Color interpolation
 				if (ColorWrite && VertexColor)
 				{
-					float4 pers_color0 = c[0] * inv_w0;
-					float4 pers_color10 = (c[1] * inv_w1) - pers_color0;
-					float4 pers_color20 = (c[2] * inv_w2) - pers_color0;
-					pers_color_row = pers_color0 + pers_color10 * bcoordf_row1 + pers_color20 * bcoordf_row2;
-					pers_color_xstep = pers_color10 * bcoordf_xstep1 + pers_color20 * bcoordf_xstep2;
-					pers_color_ystep = pers_color10 * bcoordf_ystep1 + pers_color20 * bcoordf_ystep2;
+					__m128 pers_color0x = _mm_mul_ps(_mm_set1_ps(c[0].x), inv_w0);
+					__m128 pers_color0y = _mm_mul_ps(_mm_set1_ps(c[0].y), inv_w0);
+					__m128 pers_color0z = _mm_mul_ps(_mm_set1_ps(c[0].z), inv_w0);
+					__m128 pers_color10x = _mm_sub_ps(_mm_mul_ps(_mm_set1_ps(c[1].x), inv_w1), pers_color0x);
+					__m128 pers_color10y = _mm_sub_ps(_mm_mul_ps(_mm_set1_ps(c[1].y), inv_w1), pers_color0y);
+					__m128 pers_color10z = _mm_sub_ps(_mm_mul_ps(_mm_set1_ps(c[1].z), inv_w1), pers_color0z);
+					__m128 pers_color20x = _mm_sub_ps(_mm_mul_ps(_mm_set1_ps(c[2].x), inv_w2), pers_color0x);
+					__m128 pers_color20y = _mm_sub_ps(_mm_mul_ps(_mm_set1_ps(c[2].y), inv_w2), pers_color0y);
+					__m128 pers_color20z = _mm_sub_ps(_mm_mul_ps(_mm_set1_ps(c[2].z), inv_w2), pers_color0z);
+					pers_color_row[0] = _mm_add_ps(pers_color0x, _mm_add_ps(_mm_mul_ps(pers_color10x, bcoordf_row1), _mm_mul_ps(pers_color20x, bcoordf_row2)));
+					pers_color_row[1] = _mm_add_ps(pers_color0y, _mm_add_ps(_mm_mul_ps(pers_color10y, bcoordf_row1), _mm_mul_ps(pers_color20y, bcoordf_row2)));
+					pers_color_row[2] = _mm_add_ps(pers_color0z, _mm_add_ps(_mm_mul_ps(pers_color10z, bcoordf_row1), _mm_mul_ps(pers_color20z, bcoordf_row2)));
+					pers_color_xstep[0] = _mm_add_ps(_mm_mul_ps(pers_color10x, bcoordf_xstep1), _mm_mul_ps(pers_color20x, bcoordf_xstep2));
+					pers_color_xstep[1] = _mm_add_ps(_mm_mul_ps(pers_color10y, bcoordf_xstep1), _mm_mul_ps(pers_color20y, bcoordf_xstep2));
+					pers_color_xstep[2] = _mm_add_ps(_mm_mul_ps(pers_color10z, bcoordf_xstep1), _mm_mul_ps(pers_color20z, bcoordf_xstep2));
+					pers_color_ystep[0] = _mm_add_ps(_mm_mul_ps(pers_color10x, bcoordf_ystep1), _mm_mul_ps(pers_color20x, bcoordf_ystep2));
+					pers_color_ystep[1] = _mm_add_ps(_mm_mul_ps(pers_color10y, bcoordf_ystep1), _mm_mul_ps(pers_color20y, bcoordf_ystep2));
+					pers_color_ystep[2] = _mm_add_ps(_mm_mul_ps(pers_color10z, bcoordf_ystep1), _mm_mul_ps(pers_color20z, bcoordf_ystep2));
 				}
 			}
 
 			// Output buffer
 			char *out_color_row;
 			char *out_depth_row;
+			U32 xcount, ycount;
 			{
-				S32 x_in_tile = bounds[0][0] - tile_min_x;
-				S32 y_in_tile = bounds[0][1] - tile_min_y;
+				S32 tile_begin_x = (bounds[0][0] - tile_min_x) / BlockSizeX;
+				S32 tile_begin_y = (bounds[0][1] - tile_min_y) / BlockSizeY;
+				S32 tile_end_x = (bounds[1][0] - tile_min_x) / BlockSizeX;
+				S32 tile_end_y = (bounds[1][1] - tile_min_y) / BlockSizeY;
+
+				xcount = tile_end_x - tile_begin_x;
+				ycount = tile_end_y - tile_begin_y;
 
 				if (ColorWrite)
 				{
 					out_color_row = (char *)color_buffer;
-					out_color_row += (y_in_tile * TileSizeX + x_in_tile) * 4;
+					out_color_row += tile_begin_y * ColorTilePitch + tile_begin_x * ColorBlockBytes;
 				}
 				if (DepthWrite || DepthTest)
 				{
 					out_depth_row = (char *)depth_buffer;
-					out_depth_row += (y_in_tile * TileSizeX + x_in_tile) * 4;
+					out_depth_row += tile_begin_y * DepthTilePitch + tile_begin_x * DepthBlockBytes;
 				}
 			}
 
 			// Sample the bounding box of the triangle and output pixels.
-			for (S32 y = bounds[0][1]; y <= bounds[1][1]; ++y)
+			for (S32 y = ycount; y--; )
 			{
 				// Setup output buffers
 				char *out_color;
@@ -266,10 +323,10 @@ namespace nmj
 				}
 
 				// Setup stepped buffers for row operations.
-				S32 bcoord[3];
-				float inv_w;
-				float z;
-				float4 pers_color;
+				__m128i bcoord[3];
+				__m128 inv_w;
+				__m128 z;
+				__m128 pers_color[3];
 				{
 					bcoord[0] = bcoord_row[0];
 					bcoord[1] = bcoord_row[1];
@@ -281,93 +338,119 @@ namespace nmj
 						z = z_row;
 
 					if (ColorWrite && VertexColor)
-						pers_color = pers_color_row;
+					{
+						pers_color[0] = pers_color_row[0];
+						pers_color[1] = pers_color_row[1];
+						pers_color[2] = pers_color_row[2];
+					}
 				}
 
 				// X loop
-				for (S32 x = bounds[0][0]; x <= bounds[1][0]; ++x)
+				for (S32 x = xcount; x--; )
 				{
-					// When inside triangle, output pixel.
-					if ((bcoord[0] | bcoord[1] | bcoord[2]) < 0)
-						goto skip_pixel;
+					// Generate mask for pixels that overlap the triangle.
+					__m128i mask = _mm_cmpgt_epi32(_mm_or_si128(_mm_or_si128(bcoord[0], bcoord[1]), bcoord[2]), _mm_setzero_si128());
 
-					// Interpolated Z
+					// Skip blocks that don't overlap the triangle.
+					if (_mm_movemask_epi8(mask) == 0)
+						goto skip_block;
+
+					// Depth buffering
 					if (DepthTest || DepthWrite)
 					{
-						U32 z_unorm = U32(z * float(0xFFFFFF));
+						__m128i old_z = _mm_load_si128((__m128i *)out_depth);
+						__m128i new_z = _mm_cvtps_epi32(_mm_mul_ps(z, _mm_set1_ps(float(0xFFFFFF))));
 
 						// Apply depth testing.
 						if (DepthTest)
 						{
-							if (*(U32 *)out_depth < z_unorm)
-								goto skip_pixel;
+							mask = _mm_and_si128(mask, _mm_cmpgt_epi32(old_z, new_z));
+
+							// Skip the block, when depth buffer occludes it completely.
+							if (_mm_movemask_epi8(mask) == 0)
+								goto skip_block;
 						}
 
 						// Write depth output
 						if (DepthWrite)
-							*(U32 *)out_depth = z_unorm;
+						{
+							__m128i result = _mm_or_si128(_mm_andnot_si128(mask, old_z), _mm_and_si128(mask, new_z));
+							_mm_store_si128((__m128i *)out_depth, result);
+						}
 					}
-
-					// Interpolated W
-					float w = 1.0f / inv_w;
 
 					// Write color output
 					if (ColorWrite)
 					{
+						__m128 w = _mm_rcp_ps(inv_w);
+
+						__m128i old_color = _mm_load_si128((__m128i *)out_color);
+						__m128i new_color;
+
 						// Output pixel
 						if (VertexColor)
 						{
-							((U8 *)out_color)[0] = U8(w * pers_color.x * 255.0f);
-							((U8 *)out_color)[1] = U8(w * pers_color.y * 255.0f);
-							((U8 *)out_color)[2] = U8(w * pers_color.z * 255.0f);
+							__m128i x = _mm_cvtps_epi32(_mm_mul_ps(_mm_mul_ps(pers_color[0], w), _mm_set1_ps(255.0f)));
+							__m128i y = _mm_cvtps_epi32(_mm_mul_ps(_mm_mul_ps(pers_color[1], w), _mm_set1_ps(255.0f)));
+							__m128i z = _mm_cvtps_epi32(_mm_mul_ps(_mm_mul_ps(pers_color[2], w), _mm_set1_ps(255.0f)));
+
+							new_color = _mm_or_si128(_mm_or_si128(x, _mm_slli_epi32(y, 8)), _mm_slli_epi32(z, 16));
 						}
 						else
 						{
-							((U8 *)out_color)[0] = U8(255);
-							((U8 *)out_color)[1] = U8(255);
-							((U8 *)out_color)[2] = U8(255);
+							new_color = mask;
 						}
+
+						__m128i result = _mm_or_si128(_mm_andnot_si128(mask, old_color), _mm_and_si128(mask, new_color));
+						_mm_store_si128((__m128i *)out_color, result);
 					}
 
 					// I dislike goto, but it wins the over-nested case above without it.
-					skip_pixel:
+					skip_block:
 					{
 						if (ColorWrite)
-							out_color += 4;
+							out_color += ColorBlockBytes;
 						if (DepthWrite || DepthTest)
-							out_depth += 4;
+							out_depth += DepthBlockBytes;
 
-						bcoord[0] += bcoord_xstep[0];
-						bcoord[1] += bcoord_xstep[1];
-						bcoord[2] += bcoord_xstep[2];
+						bcoord[0] = _mm_add_epi32(bcoord[0], bcoord_xstep[0]);
+						bcoord[1] = _mm_add_epi32(bcoord[1], bcoord_xstep[1]);
+						bcoord[2] = _mm_add_epi32(bcoord[2], bcoord_xstep[2]);
 
-						inv_w += inv_w_xstep;
+						inv_w = _mm_add_ps(inv_w, inv_w_xstep);
 
 						if (DepthWrite || DepthTest)
-							z += z_xstep;
+							z = _mm_add_ps(z, z_xstep);
 
 						if (ColorWrite && VertexColor)
-							pers_color += pers_color_xstep;
+						{
+							pers_color[0] = _mm_add_ps(pers_color[0], pers_color_xstep[0]);
+							pers_color[1] = _mm_add_ps(pers_color[1], pers_color_xstep[1]);
+							pers_color[2] = _mm_add_ps(pers_color[2], pers_color_xstep[2]);
+						}
 					}
 				} // X loop
 
 				if (ColorWrite)
-					out_color_row += TileSizeX * 4;
+					out_color_row += ColorTilePitch;
 				if (DepthWrite || DepthTest)
-					out_depth_row += TileSizeX * 4;
+					out_depth_row += DepthTilePitch;
 
-				bcoord_row[0] += bcoord_ystep[0];
-				bcoord_row[1] += bcoord_ystep[1];
-				bcoord_row[2] += bcoord_ystep[2];
+				bcoord_row[0] = _mm_add_epi32(bcoord_row[0], bcoord_ystep[0]);
+				bcoord_row[1] = _mm_add_epi32(bcoord_row[1], bcoord_ystep[1]);
+				bcoord_row[2] = _mm_add_epi32(bcoord_row[2], bcoord_ystep[2]);
 
-				inv_w_row += inv_w_ystep;
+				inv_w_row = _mm_add_ps(inv_w_row, inv_w_ystep);
 
 				if (DepthWrite || DepthTest)
-					z_row += z_ystep;
+					z_row = _mm_add_ps(z_row, z_ystep);
 
 				if (ColorWrite && VertexColor)
-					pers_color_row += pers_color_ystep;
-
+				{
+					pers_color_row[0] = _mm_add_ps(pers_color_row[0], pers_color_ystep[0]);
+					pers_color_row[1] = _mm_add_ps(pers_color_row[1], pers_color_ystep[1]);
+					pers_color_row[2] = _mm_add_ps(pers_color_row[2], pers_color_ystep[2]);
+				}
 			} // Y loop
 		} // Triangle loop
 	}
@@ -381,7 +464,7 @@ namespace nmj
 
 		if (color)
 		{
-			ret = GetAligned(ret, 16);
+			ret = GetAligned(ret, 16u);
 
 			U32 pitch = width * ColorTileBytes;
 			ret += pitch * height;
@@ -389,7 +472,7 @@ namespace nmj
 
 		if (depth)
 		{
-			ret = GetAligned(ret, 16);
+			ret = GetAligned(ret, 16u);
 
 			U32 pitch = width * DepthTileBytes;
 			ret += pitch * height;
@@ -419,7 +502,7 @@ namespace nmj
 
 		if (color)
 		{
-			alloc_stack = GetAligned(alloc_stack, 16);
+			alloc_stack = GetAligned(alloc_stack, 16u);
 
 			U32 pitch = width * ColorTileBytes;
 			self.color_buffer = alloc_stack;
@@ -428,7 +511,7 @@ namespace nmj
 
 		if (depth)
 		{
-			alloc_stack = GetAligned(alloc_stack, 16);
+			alloc_stack = GetAligned(alloc_stack, 16u);
 
 			U32 pitch = width * DepthTileBytes;
 			self.depth_buffer = alloc_stack;
@@ -578,7 +661,9 @@ namespace nmj
 
 	void Blit(LockBufferInfo &output, RasterizerOutput &input, U32 split_index, U32 num_splits)
 	{
-		NMJ_ASSERT(output.width % 4 == 0);
+		NMJ_STATIC_ASSERT(BlockSizeX == 2 && BlockSizeY == 2, "Update this function.");
+		NMJ_ASSERT(output.width % (BlockSizeX * 2) == 0);
+		NMJ_ASSERT(output.height % BlockSizeY == 0);
 		NMJ_ASSERT(output.width == input.width);
 		NMJ_ASSERT(output.height == input.height);
 
@@ -598,34 +683,45 @@ namespace nmj
 		{
 			const U32 sx = (index % x_tile_count) * TileSizeX;
 			const U32 sy = (index / x_tile_count) * TileSizeY;
-			const U32 xcount = Min(width - sx, TileSizeX);
-			const U32 ycount = Min(height - sy, TileSizeY);
+			const U32 xcount = Min(width - sx, TileSizeX) / (BlockSizeX * 2);
+			const U32 ycount = Min(height - sy, TileSizeY) / BlockSizeY;
 
-			char *out_row = ((char *)output.data) + sy * output.pitch + sx * 4;
+			U32 out_pitch = output.pitch * 2;
+			char *out_row0 = ((char *)output.data) + sy * output.pitch + sx * 4;
+			char *out_row1 = ((char *)output.data) + (sy + 1) * output.pitch + sx * 4;
 			char *in_row = in_tile;
 
 			for (U32 y = ycount; y--; )
 			{
-				char *out = out_row;
+				char *out0 = out_row0;
+				char *out1 = out_row1;
 				char *in = in_row;
 
-				for (U32 x = xcount / 4; x--; )
+				for (U32 x = xcount; x--; )
 				{
-					__m128i simd_x = _mm_load_si128((__m128i *)in);
-					__m128i simd_z = simd_x;
-					__m128i simd_yw = simd_x;
+					__m128i simd_x0 = _mm_load_si128((__m128i *)in);
+					__m128i simd_x1 = _mm_load_si128((__m128i *)(in + 16));
+					__m128i simd_z0 = _mm_and_si128(_mm_srli_epi32(simd_x0, 16), y_mask);
+					__m128i simd_z1 = _mm_and_si128(_mm_srli_epi32(simd_x1, 16), y_mask);
+					__m128i simd_yw0 = _mm_and_si128(simd_x0, zw_mask);
+					__m128i simd_yw1 = _mm_and_si128(simd_x1, zw_mask);
+					simd_x0 = _mm_and_si128(_mm_slli_epi32(simd_x0, 16), x_mask);
+					simd_x1 = _mm_and_si128(_mm_slli_epi32(simd_x1, 16), x_mask);
 
-					simd_x = _mm_and_si128(_mm_slli_epi32(simd_x, 16), x_mask);
-					simd_z = _mm_and_si128(_mm_srli_epi32(simd_z, 16), y_mask);
-					simd_yw = _mm_and_si128(simd_yw, zw_mask);
+					__m128i xyz1 = _mm_or_si128(_mm_or_si128(simd_x0, simd_z0), simd_yw0);
+					__m128i xyz2 = _mm_or_si128(_mm_or_si128(simd_x1, simd_z1), simd_yw1);
 
-					_mm_storeu_si128((__m128i *)out, _mm_or_si128(_mm_or_si128(simd_x, simd_z), simd_yw));
-					out += 16;
-					in += 16;
+					_mm_storeu_si128((__m128i *)out0, _mm_unpacklo_epi64(xyz1, xyz2));
+					_mm_storeu_si128((__m128i *)out1, _mm_unpackhi_epi64(xyz1, xyz2));
+
+					out0 += 16;
+					out1 += 16;
+					in += ColorBlockBytes * 2;
 				}
 
-				in_row += TileSizeX * 4;
-				out_row += output.pitch;
+				in_row += ColorTilePitch;
+				out_row0 += out_pitch;
+				out_row1 += out_pitch;
 			}
 
 			in_tile += num_splits * ColorTileBytes;
