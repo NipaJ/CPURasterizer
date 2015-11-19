@@ -1,12 +1,7 @@
 #include "General.h"
 #include "Rasterizer.h"
 
-#include "PlatformAPI.h"
-#include "Vector.h"
-#include "Matrix.h"
 #include <emmintrin.h>
-
-#include <string.h>
 
 // Disable this warning, since our template trick relies heavily on conditional constant optimizations.
 #pragma warning(disable : 4127)
@@ -61,6 +56,16 @@ namespace nmj
 		const RasterizerInput &input
 	);
 
+	NMJ_FORCEINLINE S32 Max(S32 a, S32 b)
+	{
+		return a > b ? a : b;
+	}
+
+	NMJ_FORCEINLINE S32 Min(S32 a, S32 b)
+	{
+		return a < b ? a : b;
+	}
+
 	// Multiply two SSE epi32 integer vectors.
 	NMJ_FORCEINLINE __m128i MulEpi32(__m128i a, __m128i b)
 	{
@@ -79,10 +84,10 @@ namespace nmj
 	{
 		__m128 transform_matrix[4] =
 		{
-			_mm_loadu_ps(input.transform[0].v),
-			_mm_loadu_ps(input.transform[1].v),
-			_mm_loadu_ps(input.transform[2].v),
-			_mm_loadu_ps(input.transform[3].v)
+			_mm_loadu_ps(input.transform[0]),
+			_mm_loadu_ps(input.transform[1]),
+			_mm_loadu_ps(input.transform[2]),
+			_mm_loadu_ps(input.transform[3])
 		};
 
 		// Transform Y to point down.
@@ -104,30 +109,45 @@ namespace nmj
 		float xscale = float(scx << PixelFracBits);
 		float yscale = float(scy << PixelFracBits);
 
-		const float3 *vertices = input.vertices;
-		const float4 *colors = input.colors;
-		// const float2 *texcoords = input.texcoords;
+		const float *vertices = input.vertices;
+		const float *colors = input.colors;
+		// const float *texcoords = input.texcoords;
 		const U16 *indices = input.indices;
 
 		for (U32 count = input.triangle_count; count--; )
 		{
 			// Fetch triangle vertex information
-			__declspec(align(16)) float4 v[3];
-			float4 c[3];
+			__declspec(align(16)) float v[3][4];
+			float c[3][3];
 			{
 				const U16 i0 = indices[0];
 				const U16 i1 = indices[1];
 				const U16 i2 = indices[2];
 
-				v[0] = float4(vertices[i0], 1.0f);
-				v[1] = float4(vertices[i1], 1.0f);
-				v[2] = float4(vertices[i2], 1.0f);
+				v[0][0] = vertices[i0 * 3 + 0];
+				v[0][1] = vertices[i0 * 3 + 1];
+				v[0][2] = vertices[i0 * 3 + 2];
+				v[1][0] = vertices[i1 * 3 + 0];
+				v[1][1] = vertices[i1 * 3 + 1];
+				v[1][2] = vertices[i1 * 3 + 2];
+				v[2][0] = vertices[i2 * 3 + 0];
+				v[2][1] = vertices[i2 * 3 + 1];
+				v[2][2] = vertices[i2 * 3 + 2];
 
 				if (VertexColor)
 				{
-					c[0] = colors[i0];
-					c[1] = colors[i1];
-					c[2] = colors[i2];
+					c[0][0] = colors[i0 * 4 + 0];
+					c[0][1] = colors[i0 * 4 + 1];
+					c[0][2] = colors[i0 * 4 + 2];
+					// c[0][3] = colors[i0 * 4 + 3];
+					c[1][0] = colors[i1 * 4 + 0];
+					c[1][1] = colors[i1 * 4 + 1];
+					c[1][2] = colors[i1 * 4 + 2];
+					// c[1][3] = colors[i1 * 4 + 3];
+					c[2][0] = colors[i2 * 4 + 0];
+					c[2][1] = colors[i2 * 4 + 1];
+					c[2][2] = colors[i2 * 4 + 2];
+					// c[2][3] = colors[i2 * 4 + 3];
 				}
 
 				indices += 3;
@@ -137,25 +157,25 @@ namespace nmj
 			for (unsigned i = 0; i < 3; ++i)
 			{
 				__m128 result;
-				result = _mm_mul_ps(transform_matrix[0], _mm_set1_ps(v[i].x));
-				result = _mm_add_ps(result, _mm_mul_ps(transform_matrix[1], _mm_set1_ps(v[i].y)));
-				result = _mm_add_ps(result, _mm_mul_ps(transform_matrix[2], _mm_set1_ps(v[i].z)));
-				result = _mm_add_ps(result, _mm_mul_ps(transform_matrix[3], _mm_set1_ps(v[i].w)));
-				_mm_store_ps(v[i].v, result);
+				result = _mm_mul_ps(transform_matrix[0], _mm_set1_ps(v[i][0]));
+				result = _mm_add_ps(result, _mm_mul_ps(transform_matrix[1], _mm_set1_ps(v[i][1])));
+				result = _mm_add_ps(result, _mm_mul_ps(transform_matrix[2], _mm_set1_ps(v[i][2])));
+				result = _mm_add_ps(result, transform_matrix[3]);
+				_mm_store_ps(v[i], result);
 			}
 
 			// Hack rejection for planes, that cross near plane
-			if (v[0].z < 0.0f || v[1].z < 0.0f || v[2].z < 0.0f)
+			if (v[0][2] < 0.0f || v[1][2] < 0.0f || v[2][2] < 0.0f)
 				continue;
 
 			// Convert to clip space coordinates to fixed point screen space coordinates.
 			S32 coord[3][2];
-			coord[0][0] = S32(v[0].x * xscale / v[0].w);
-			coord[0][1] = S32(v[0].y * yscale / v[0].w);
-			coord[1][0] = S32(v[1].x * xscale / v[1].w);
-			coord[1][1] = S32(v[1].y * yscale / v[1].w);
-			coord[2][0] = S32(v[2].x * xscale / v[2].w);
-			coord[2][1] = S32(v[2].y * yscale / v[2].w);
+			coord[0][0] = S32(v[0][0] * xscale / v[0][3]);
+			coord[0][1] = S32(v[0][1] * yscale / v[0][3]);
+			coord[1][0] = S32(v[1][0] * xscale / v[1][3]);
+			coord[1][1] = S32(v[1][1] * yscale / v[1][3]);
+			coord[2][0] = S32(v[2][0] * xscale / v[2][3]);
+			coord[2][1] = S32(v[2][1] * yscale / v[2][3]);
 
 			// Some common constants for the barycentric calculations.
 			const S32 coord21x = coord[2][0] - coord[1][0];
@@ -240,9 +260,9 @@ namespace nmj
 				__m128 bcoordf_ystep2 = _mm_mul_ps(_mm_cvtepi32_ps(bcoord_ystep[2]), inv_triarea_x2f);
 
 				// W interpolation
-				__m128 inv_w0 = _mm_rcp_ps(_mm_set1_ps(v[0].w));
-				__m128 inv_w1 = _mm_rcp_ps(_mm_set1_ps(v[1].w));
-				__m128 inv_w2 = _mm_rcp_ps(_mm_set1_ps(v[2].w));
+				__m128 inv_w0 = _mm_rcp_ps(_mm_set1_ps(v[0][3]));
+				__m128 inv_w1 = _mm_rcp_ps(_mm_set1_ps(v[1][3]));
+				__m128 inv_w2 = _mm_rcp_ps(_mm_set1_ps(v[2][3]));
 				__m128 inv_w10 = _mm_sub_ps(inv_w1, inv_w0);
 				__m128 inv_w20 = _mm_sub_ps(inv_w2, inv_w0);
 				inv_w_row = _mm_add_ps(inv_w0, _mm_add_ps(_mm_mul_ps(inv_w10, bcoordf_row1), _mm_mul_ps(inv_w20, bcoordf_row2)));
@@ -252,9 +272,9 @@ namespace nmj
 				// Z interpolation
 				if (DepthWrite || DepthTest)
 				{
-					__m128 z0 = _mm_mul_ps(_mm_set1_ps(v[0].z), inv_w0);
-					__m128 z10 = _mm_sub_ps(_mm_mul_ps(_mm_set1_ps(v[1].z), inv_w1), z0);
-					__m128 z20 = _mm_sub_ps(_mm_mul_ps(_mm_set1_ps(v[2].z), inv_w2), z0);
+					__m128 z0 = _mm_mul_ps(_mm_set1_ps(v[0][2]), inv_w0);
+					__m128 z10 = _mm_sub_ps(_mm_mul_ps(_mm_set1_ps(v[1][2]), inv_w1), z0);
+					__m128 z20 = _mm_sub_ps(_mm_mul_ps(_mm_set1_ps(v[2][2]), inv_w2), z0);
 					z_row = _mm_add_ps(z0, _mm_add_ps(_mm_mul_ps(z10, bcoordf_row1), _mm_mul_ps(z20, bcoordf_row2)));
 					z_xstep = _mm_add_ps(_mm_mul_ps(z10, bcoordf_xstep1), _mm_mul_ps(z20, bcoordf_xstep2));
 					z_ystep = _mm_add_ps(_mm_mul_ps(z10, bcoordf_ystep1), _mm_mul_ps(z20, bcoordf_ystep2));
@@ -263,15 +283,15 @@ namespace nmj
 				// Color interpolation
 				if (ColorWrite && VertexColor)
 				{
-					__m128 pers_color0x = _mm_mul_ps(_mm_set1_ps(c[0].x), inv_w0);
-					__m128 pers_color0y = _mm_mul_ps(_mm_set1_ps(c[0].y), inv_w0);
-					__m128 pers_color0z = _mm_mul_ps(_mm_set1_ps(c[0].z), inv_w0);
-					__m128 pers_color10x = _mm_sub_ps(_mm_mul_ps(_mm_set1_ps(c[1].x), inv_w1), pers_color0x);
-					__m128 pers_color10y = _mm_sub_ps(_mm_mul_ps(_mm_set1_ps(c[1].y), inv_w1), pers_color0y);
-					__m128 pers_color10z = _mm_sub_ps(_mm_mul_ps(_mm_set1_ps(c[1].z), inv_w1), pers_color0z);
-					__m128 pers_color20x = _mm_sub_ps(_mm_mul_ps(_mm_set1_ps(c[2].x), inv_w2), pers_color0x);
-					__m128 pers_color20y = _mm_sub_ps(_mm_mul_ps(_mm_set1_ps(c[2].y), inv_w2), pers_color0y);
-					__m128 pers_color20z = _mm_sub_ps(_mm_mul_ps(_mm_set1_ps(c[2].z), inv_w2), pers_color0z);
+					__m128 pers_color0x = _mm_mul_ps(_mm_set1_ps(c[0][0]), inv_w0);
+					__m128 pers_color0y = _mm_mul_ps(_mm_set1_ps(c[0][1]), inv_w0);
+					__m128 pers_color0z = _mm_mul_ps(_mm_set1_ps(c[0][2]), inv_w0);
+					__m128 pers_color10x = _mm_sub_ps(_mm_mul_ps(_mm_set1_ps(c[1][0]), inv_w1), pers_color0x);
+					__m128 pers_color10y = _mm_sub_ps(_mm_mul_ps(_mm_set1_ps(c[1][1]), inv_w1), pers_color0y);
+					__m128 pers_color10z = _mm_sub_ps(_mm_mul_ps(_mm_set1_ps(c[1][2]), inv_w1), pers_color0z);
+					__m128 pers_color20x = _mm_sub_ps(_mm_mul_ps(_mm_set1_ps(c[2][0]), inv_w2), pers_color0x);
+					__m128 pers_color20y = _mm_sub_ps(_mm_mul_ps(_mm_set1_ps(c[2][1]), inv_w2), pers_color0y);
+					__m128 pers_color20z = _mm_sub_ps(_mm_mul_ps(_mm_set1_ps(c[2][2]), inv_w2), pers_color0z);
 					pers_color_row[0] = _mm_add_ps(pers_color0x, _mm_add_ps(_mm_mul_ps(pers_color10x, bcoordf_row1), _mm_mul_ps(pers_color20x, bcoordf_row2)));
 					pers_color_row[1] = _mm_add_ps(pers_color0y, _mm_add_ps(_mm_mul_ps(pers_color10y, bcoordf_row1), _mm_mul_ps(pers_color20y, bcoordf_row2)));
 					pers_color_row[2] = _mm_add_ps(pers_color0z, _mm_add_ps(_mm_mul_ps(pers_color10z, bcoordf_row1), _mm_mul_ps(pers_color20z, bcoordf_row2)));
@@ -617,13 +637,13 @@ namespace nmj
 		}
 	}
 
-	void ClearColor(RasterizerOutput &output, float4 value, U32 split_index, U32 num_splits)
+	void ClearColor(RasterizerOutput &output, float r, float g, float b, float a, U32 split_index, U32 num_splits)
 	{
 		const U32 x_tile_count = DivWithRoundUp<U32>(output.width, TileSizeX);
 		const U32 y_tile_count = DivWithRoundUp<U32>(output.height, TileSizeY);
 		const U32 tile_count = x_tile_count * y_tile_count;
 
-		__m128i cv = _mm_set1_epi32(U8(value.x * 255.0f) | U8(value.y * 255.0f) << 8 | U8(value.z * 255.0f) << 16 | U8(value.w * 255.0f) << 24);
+		__m128i cv = _mm_set1_epi32(U8(r * 255.0f) | U8(g * 255.0f) << 8 | U8(b * 255.0f) << 16 | U8(a * 255.0f) << 24);
 
 		char *out = ((char *)output.color_buffer) + split_index * ColorTileBytes;
 		for (U32 index = split_index; index < tile_count; index += num_splits)
@@ -638,13 +658,13 @@ namespace nmj
 		}
 	}
 
-	void ClearDepth(RasterizerOutput &output, float value, U32 split_index, U32 num_splits)
+	void ClearDepth(RasterizerOutput &output, float depth, U8 stencil, U32 split_index, U32 num_splits)
 	{
 		const U32 x_tile_count = DivWithRoundUp<U32>(output.width, TileSizeX);
 		const U32 y_tile_count = DivWithRoundUp<U32>(output.height, TileSizeY);
 		const U32 tile_count = x_tile_count * y_tile_count;
 
-		__m128i cv = _mm_set1_epi32(U32(value * float(0xFFFFFF)));
+		__m128i cv = _mm_set1_epi32(U32(depth * float(0xFFFFFF)) | stencil << 24);
 
 		char *out = ((char *)output.depth_buffer) + split_index * DepthTileBytes;
 		for (U32 index = split_index; index < tile_count; index += num_splits)
@@ -659,13 +679,11 @@ namespace nmj
 		}
 	}
 
-	void Blit(LockBufferInfo &output, RasterizerOutput &input, U32 split_index, U32 num_splits)
+	void Blit(void *output, U32 pitch, RasterizerOutput &input, U32 split_index, U32 num_splits)
 	{
 		NMJ_STATIC_ASSERT(BlockSizeX == 2 && BlockSizeY == 2, "Update this function.");
-		NMJ_ASSERT(output.width % (BlockSizeX * 2) == 0);
-		NMJ_ASSERT(output.height % BlockSizeY == 0);
-		NMJ_ASSERT(output.width == input.width);
-		NMJ_ASSERT(output.height == input.height);
+		NMJ_ASSERT(input.width % (BlockSizeX * 2) == 0);
+		NMJ_ASSERT(input.height % BlockSizeY == 0);
 
 		const U32 width = input.width;
 		const U32 height = input.height;
@@ -686,9 +704,9 @@ namespace nmj
 			const U32 xcount = Min(width - sx, TileSizeX) / (BlockSizeX * 2);
 			const U32 ycount = Min(height - sy, TileSizeY) / BlockSizeY;
 
-			U32 out_pitch = output.pitch * 2;
-			char *out_row0 = ((char *)output.data) + sy * output.pitch + sx * 4;
-			char *out_row1 = ((char *)output.data) + (sy + 1) * output.pitch + sx * 4;
+			U32 out_pitch = pitch * 2;
+			char *out_row0 = ((char *)output) + sy * pitch + sx * 4;
+			char *out_row1 = ((char *)output) + (sy + 1) * pitch + sx * 4;
 			char *in_row = in_tile;
 
 			for (U32 y = ycount; y--; )

@@ -29,8 +29,8 @@ namespace nmj
 
 	struct Model
 	{
-		float3 *vertex_pos;
-		float4 *vertex_color;
+		float *vertex_pos;
+		float *vertex_color;
 		U16 *indices;
 
 		U32 triangle_count;
@@ -94,27 +94,27 @@ namespace nmj
 
 	void CreateTestScene(Scene &scene)
 	{
-		static float3 vertices[8] =
+		static float vertices[8 * 3] =
 		{
-			float3(-1.0f, +1.0f, +1.0f),
-			float3(+1.0f, +1.0f, +1.0f),
-			float3(+1.0f, -1.0f, +1.0f),
-			float3(-1.0f, -1.0f, +1.0f),
-			float3(-1.0f, +1.0f, -1.0f),
-			float3(+1.0f, +1.0f, -1.0f),
-			float3(+1.0f, -1.0f, -1.0f),
-			float3(-1.0f, -1.0f, -1.0f)
+			-1.0f, +1.0f, +1.0f,
+			+1.0f, +1.0f, +1.0f,
+			+1.0f, -1.0f, +1.0f,
+			-1.0f, -1.0f, +1.0f,
+			-1.0f, +1.0f, -1.0f,
+			+1.0f, +1.0f, -1.0f,
+			+1.0f, -1.0f, -1.0f,
+			-1.0f, -1.0f, -1.0f
 		};
-		static float4 colors[8] =
+		static float colors[8 * 4] =
 		{
-			float4(1.0f, 1.0f, 0.0f, 0.0f),
-			float4(0.0f, 1.0f, 0.0f, 0.0f),
-			float4(0.0f, 0.0f, 0.0f, 0.0f),
-			float4(1.0f, 0.0f, 0.0f, 0.0f),
-			float4(1.0f, 1.0f, 1.0f, 0.0f),
-			float4(0.0f, 1.0f, 1.0f, 0.0f),
-			float4(0.0f, 0.0f, 1.0f, 0.0f),
-			float4(1.0f, 0.0f, 1.0f, 0.0f)
+			1.0f, 1.0f, 0.0f, 0.0f,
+			0.0f, 1.0f, 0.0f, 0.0f,
+			0.0f, 0.0f, 0.0f, 0.0f,
+			1.0f, 0.0f, 0.0f, 0.0f,
+			1.0f, 1.0f, 1.0f, 0.0f,
+			0.0f, 1.0f, 1.0f, 0.0f,
+			0.0f, 0.0f, 1.0f, 0.0f,
+			1.0f, 0.0f, 1.0f, 0.0f
 		};
 		static U16 indices[] =
 		{
@@ -133,12 +133,14 @@ namespace nmj
 			12
 		};
 
-		scene.objects.resize(2);
-		scene.objects[0].model = &box_model;
-		scene.objects[1].model = &box_model;
+		scene.objects.resize(4 * 4 * 4);
+		for (U32 i = 0; i < scene.objects.size(); ++i)
+			scene.objects[i].model = &box_model;
 
-		CreateIdentity(scene.objects[0].transform);
-		CreateTranslate(scene.objects[1].transform, float3(3.0f, 0.0f, 0.0f));
+		for (U32 x = 0; x < 4; x++)
+		for (U32 y = 0; y < 4; y++)
+		for (U32 z = 0; z < 4; z++)
+			CreateTranslate(scene.objects[x * (4 * 4) + y * 4 + z].transform, 2.5f * float3(float(x) - 2.0f, float(y) - 2.0f, float(z) - 2.0f));
 	}
 
 	unsigned int (__stdcall RasterizerThread)(void *userdata)
@@ -154,8 +156,8 @@ namespace nmj
 			event_id = (event_id + 1) % 2;
 
 			// Clear color and depth buffers.
-			ClearColor(app.framebuffer, float4(0.0f), thread_index, DefaultThreadAmount);
-			ClearDepth(app.framebuffer, 1.0f, thread_index, DefaultThreadAmount);
+			ClearColor(app.framebuffer, 0.0f, 0.0f, 0.0f, 0.0f, thread_index, DefaultThreadAmount);
+			ClearDepth(app.framebuffer, 1.0f, 0, thread_index, DefaultThreadAmount);
 
 			// Render the scene
 			RasterizerState state;
@@ -164,7 +166,7 @@ namespace nmj
 			Rasterize(state, app.rasterizer_input.data(), U32(app.rasterizer_input.size()), thread_index, DefaultThreadAmount);
 
 			// Blit to screen.
-			Blit(*app.frame_info, app.framebuffer, thread_index, DefaultThreadAmount);
+			Blit(app.frame_info->data, app.frame_info->pitch, app.framebuffer, thread_index, DefaultThreadAmount);
 
 			SetEvent(app.rasterization_finished_event[thread_index]);
 		}
@@ -275,7 +277,7 @@ namespace nmj
 			ri.indices = model->indices;
 			ri.triangle_count = model->triangle_count;
 
-			Mul(ri.transform, object.transform, view_projection);
+			Mul((float4 (&)[4])ri.transform, object.transform, view_projection);
 		}
 	}
 
@@ -352,7 +354,7 @@ namespace nmj
 		app.player_flags = 0;
 
 		// Setup camera
-		app.camera.pos = float3(0.0f, 0.0f, -5.0f);
+		app.camera.pos = float3(0.0f, 0.0f, -8.0f);
 		app.camera.fov = Tau * 0.25f;
 
 		// Setup scene

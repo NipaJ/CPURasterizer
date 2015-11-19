@@ -13,47 +13,48 @@
       <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
       <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
     </Filter>
+    <Filter Include="Test">
+      <UniqueIdentifier>{7ca909e6-8d2c-4543-b0bb-cf3b743c755b}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="Source\General.h">
-      <Filter>Source Files</Filter>
-    </ClInclude>
-    <ClInclude Include="Source\PlatformAPI.h">
-      <Filter>Source Files</Filter>
-    </ClInclude>
-    <ClInclude Include="Source\MathUtils.h">
-      <Filter>Source Files</Filter>
-    </ClInclude>
-    <ClInclude Include="Source\Vector.h">
-      <Filter>Source Files</Filter>
-    </ClInclude>
-    <ClInclude Include="Source\Font.h">
-      <Filter>Source Files</Filter>
-    </ClInclude>
     <ClInclude Include="Source\Rasterizer.h">
       <Filter>Source Files</Filter>
     </ClInclude>
-    <ClInclude Include="Source\Matrix.h">
+    <ClInclude Include="Source\General.h">
       <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Test\Font.h">
+      <Filter>Test</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Test\MathUtils.h">
+      <Filter>Test</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Test\Matrix.h">
+      <Filter>Test</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Test\PlatformAPI.h">
+      <Filter>Test</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Test\stb_truetype.h">
+      <Filter>Test</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Test\Vector.h">
+      <Filter>Test</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="Source\Main.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="Source\PlatformAPI_Windows.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="Source\Font.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="Source\Rasterizer_x86.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-  </ItemGroup>
-  <ItemGroup>
-    <Text Include="Source\stb_truetype.h">
-      <Filter>Source Files</Filter>
-    </Text>
+    <ClCompile Include="Source\Test\Font.cpp">
+      <Filter>Test</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\Test\Main.cpp">
+      <Filter>Test</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\Test\PlatformAPI_Windows.cpp">
+      <Filter>Test</Filter>
+    </ClCompile>
   </ItemGroup>
 </Project>

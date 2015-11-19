@@ -90,6 +90,7 @@
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
       <AdditionalOptions>/Qifist %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalIncludeDirectories>.\Source\</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -108,6 +109,7 @@
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
       <AdditionalOptions>/Qifist %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalIncludeDirectories>.\Source\</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -127,6 +129,7 @@
       <FloatingPointModel>Fast</FloatingPointModel>
       <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
       <AdditionalOptions>/Qifist %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalIncludeDirectories>.\Source\</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -148,6 +151,7 @@
       <FloatingPointModel>Fast</FloatingPointModel>
       <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
       <AdditionalOptions>/Qifist %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalIncludeDirectories>.\Source\</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -157,22 +161,20 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClInclude Include="Source\Font.h" />
     <ClInclude Include="Source\General.h" />
-    <ClInclude Include="Source\MathUtils.h" />
-    <ClInclude Include="Source\Matrix.h" />
-    <ClInclude Include="Source\PlatformAPI.h" />
     <ClInclude Include="Source\Rasterizer.h" />
-    <ClInclude Include="Source\Vector.h" />
+    <ClInclude Include="Source\Test\Font.h" />
+    <ClInclude Include="Source\Test\MathUtils.h" />
+    <ClInclude Include="Source\Test\Matrix.h" />
+    <ClInclude Include="Source\Test\PlatformAPI.h" />
+    <ClInclude Include="Source\Test\stb_truetype.h" />
+    <ClInclude Include="Source\Test\Vector.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="Source\Font.cpp" />
-    <ClCompile Include="Source\Main.cpp" />
-    <ClCompile Include="Source\PlatformAPI_Windows.cpp" />
     <ClCompile Include="Source\Rasterizer_x86.cpp" />
-  </ItemGroup>
-  <ItemGroup>
-    <Text Include="Source\stb_truetype.h" />
+    <ClCompile Include="Source\Test\Font.cpp" />
+    <ClCompile Include="Source\Test\Main.cpp" />
+    <ClCompile Include="Source\Test\PlatformAPI_Windows.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
