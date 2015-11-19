@@ -1,21 +1,17 @@
 # CPU Rasterizer
 
 ## Specs
-This currently runs only under x86 and windows. SSE2 is required.
+Currently only x86 is supported with SSE2 requirement (64bit build is preferred, since more SIMD registers).
 
 ## TODO
+- Binning of triangles to tiles (currently each tile tests all triangles).
+- Add SIMD for triangles (process four triangles once).
 - Texture mapping.
 - Clip with near and far planes.
 - Fill rules.
 - Vertex normals.
 - Some kind of lighting system.
-- Actual threading with a proper tile-system (binning).
-- Should probably test 128x128 or 64x64 tiles.
-- Improve the API in general.
-- Add SIMD for triangles (process four triangles once).
-- Add SIMD to pixel processing (process 2x2 blocks of pixels).
-- Add more SIMD optimizations.
 - Add hierarchical rasterization.
 - Add hierarchical Z-Buffering.
-- Improve the API in general.
 - Add guard band clipping.
+
