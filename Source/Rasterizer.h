@@ -5,8 +5,6 @@
 
 namespace nmj
 {
-	struct TriangleBin;
-
 	enum
 	{
 		/* Enable color writes. */
@@ -21,14 +19,32 @@ namespace nmj
 
 	/**
 	 * Rasterizer output data.
+	 * 
+	 * Output buffers are constructed from 32x32 pixel tiles that are stored contiguously
+	 * in memory. When the output resolution does not divide evenly with the tiles, only
+	 * the remainder of the tile is used and rest of the tile is just padding with a
+	 * undefined value.
+	 * 
+	 * As an example, 144x80 output buffer would look in screen-space as following:
+	 *  -------------------- X
+	 * | T1  T2  T3  T4  T5
+	 * | T6  T7  T8  T9  T10
+	 * | T11 T12 T13 T14 T15
+	 * Y
+	 * 
+	 * Only half of the horizontal pixels of tiles T5, T10 and T15 are used, because
+	 * 144 / 32 = 4.5 tiles. Same applies for tiles from T11 to T15, but vertically,
+	 * since 80 / 32 = 2.5 tiles.
+	 * 
+	 * Tiles themselves are constructed from blocks of 2x2 pixels. Blocks are also stored
+	 * contiguously in memory and have similar screen-space layout to tiles (y-axis pointing
+	 * down).
 	 */
 	struct RasterizerOutput
 	{
 		/**
 		 * 32bit RGB color buffer with 8bit channels.
-		 *
-		 * Buffer should be rounded up to size that matches the 2x2 block
-		 * layout and 16 byte alignment is required.
+		 * 16 byte alignment is required.
 		 *
 		 * The memory is packed as 2x2 pixels block in following layout:
 		 * 00: R1 G1 B1 X  R2 G2 B2 X
@@ -44,9 +60,7 @@ namespace nmj
 
 		/**
 		 * 24bit unsigned normalized depth buffer with 8bit stencil buffer.
-		 *
-		 * Buffer should be rounded up to size that matches the 2x2 block
-		 * layout and 16 byte alignment is required.
+		 * 16 byte alignment is required.
 		 *
 		 * The memory is packed as 2x2 pixels block in following layout:
 		 * 00: D1 S1 D2 S2
@@ -59,13 +73,6 @@ namespace nmj
 		 * Y
 		 */
 		void *depth_buffer;
-
-		/**
-		 * Triangle bin
-		 *
-		 * Reserved for internal usage.
-		 */
-		TriangleBin *bin;
 
 		/**
 		 * Output resolution.
