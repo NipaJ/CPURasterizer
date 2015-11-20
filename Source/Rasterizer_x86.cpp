@@ -82,17 +82,6 @@ namespace nmj
 		void *color_buffer, void *depth_buffer,
 		const RasterizerInput &input)
 	{
-		__m128 transform_matrix[4] =
-		{
-			_mm_loadu_ps(input.transform[0]),
-			_mm_loadu_ps(input.transform[1]),
-			_mm_loadu_ps(input.transform[2]),
-			_mm_loadu_ps(input.transform[3])
-		};
-
-		// Transform Y to point down.
-		transform_matrix[1] = _mm_xor_ps(transform_matrix[1], _mm_set1_ps(-0.0f));
-
 		// Screen coordinates.
 		S32 scx = screen_width / 2;
 		S32 scy = screen_height / 2;
@@ -105,9 +94,28 @@ namespace nmj
 		S32 tile_max_x = Min((sx + TileSizeX) - scx, scx - 1);
 		S32 tile_max_y = Min((sy + TileSizeY) - scy, scx - 1);
 
-		// TODO: This could probably be combined with the matrix above? Should think about it.
-		float xscale = float(scx << PixelFracBits);
-		float yscale = float(scy << PixelFracBits);
+		// Vertex transform matrix
+		__m128 transform_matrix[4] =
+		{
+			_mm_loadu_ps(input.transform[0]),
+			_mm_loadu_ps(input.transform[1]),
+			_mm_loadu_ps(input.transform[2]),
+			_mm_loadu_ps(input.transform[3])
+		};
+
+		// Invert vertex y and scale x and y to screen coordinates.
+		{
+			float xscale = float(scx << PixelFracBits);
+			float yscale = float(scy << PixelFracBits);
+
+			__m128 scale = _mm_set_ps(1.0f, 1.0f, yscale, xscale);
+			__m128 neg_scale = _mm_set_ps(-1.0f, -1.0f, -yscale, -xscale);
+
+			transform_matrix[0] = _mm_mul_ps(transform_matrix[0], scale);
+			transform_matrix[1] = _mm_mul_ps(transform_matrix[1], neg_scale);
+			transform_matrix[2] = _mm_mul_ps(transform_matrix[2], scale);
+			transform_matrix[3] = _mm_mul_ps(transform_matrix[3], scale);
+		}
 
 		const float *vertices = input.vertices;
 		const float *colors = input.colors;
@@ -170,12 +178,12 @@ namespace nmj
 
 			// Convert to clip space coordinates to fixed point screen space coordinates.
 			S32 coord[3][2];
-			coord[0][0] = S32(v[0][0] * xscale / v[0][3]);
-			coord[0][1] = S32(v[0][1] * yscale / v[0][3]);
-			coord[1][0] = S32(v[1][0] * xscale / v[1][3]);
-			coord[1][1] = S32(v[1][1] * yscale / v[1][3]);
-			coord[2][0] = S32(v[2][0] * xscale / v[2][3]);
-			coord[2][1] = S32(v[2][1] * yscale / v[2][3]);
+			coord[0][0] = S32(v[0][0] / v[0][3]);
+			coord[0][1] = S32(v[0][1] / v[0][3]);
+			coord[1][0] = S32(v[1][0] / v[1][3]);
+			coord[1][1] = S32(v[1][1] / v[1][3]);
+			coord[2][0] = S32(v[2][0] / v[2][3]);
+			coord[2][1] = S32(v[2][1] / v[2][3]);
 
 			// Some common constants for the barycentric calculations.
 			const S32 coord21x = coord[2][0] - coord[1][0];
